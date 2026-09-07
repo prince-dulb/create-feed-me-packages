@@ -101,6 +101,14 @@ public final class CacheActions {
         var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(access.handle().cacheId());
         if (before.state().revision() != intent.revision()) return Result.STALE;
         if (intent.action() == Action.FILL_RECIPE) return recipe(player, intent);
+        // The return address is a cache-level preference, not a cell action: it uses no slot, so it
+        // must bypass the per-cell slot validation below. Setting it marks the ledger dirty (saved).
+        if (intent.action() == Action.SET_RETURN_ADDRESS) {
+            if (intent.template().length() > 128) return Result.INVALID_REQUEST;
+            if (intent.template().equals(ledger.returnAddress(access.handle().cacheId()))) return Result.OK;
+            ledger.setReturnAddress(access.handle().cacheId(), intent.template());
+            return Result.OK;
+        }
         var carried = creativeCursor == null ? player.containerMenu.getCarried() : creativeCursor;
         int slot = intent.slot();
         if (slot < 0 || slot >= before.state().cells().size()) return Result.INVALID_REQUEST;
@@ -146,11 +154,6 @@ public final class CacheActions {
                 catch (IllegalArgumentException invalid) { return Result.INVALID_REQUEST; }
             }
             case RESET_REQUEST -> edit.reset(slot);
-            case SET_RETURN_ADDRESS -> {
-                if (intent.template().length() > 128) return Result.INVALID_REQUEST;
-                if (intent.template().equals(ledger.returnAddress(access.handle().cacheId()))) return Result.OK;
-                ledger.setReturnAddress(access.handle().cacheId(), intent.template());
-            }
             default -> { return Result.INVALID_REQUEST; }
         }
         if (inventoryPlan != null && !inventoryPlan.stillValid(player.getInventory())) return Result.STALE;

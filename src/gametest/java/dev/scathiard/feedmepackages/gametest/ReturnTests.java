@@ -1,6 +1,7 @@
 package dev.scathiard.feedmepackages.gametest;
 
 import dev.scathiard.feedmepackages.FeedMePackages;
+import dev.scathiard.feedmepackages.interaction.CacheActions;
 import dev.scathiard.feedmepackages.item.ItemVariantKey;
 import dev.scathiard.feedmepackages.logistics.ReturnService;
 import dev.scathiard.feedmepackages.registry.FmpRegistries;
@@ -43,6 +44,22 @@ public final class ReturnTests {
         ledger.setReturnAddress(handle.cacheId(), "FMP@origin");
         var saved = CacheLedger.load(ledger.save(new CompoundTag(), player.registryAccess()), player.registryAccess());
         helper.assertTrue(saved.problem().isEmpty() && "FMP@origin".equals(saved.returnAddress(handle.cacheId())), "Return address did not persist");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void returnAddressSavesThroughIntentPath(GameTestHelper helper) {
+        var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack());
+        var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer()); var handle = access.handle();
+        // The real client sends SET_RETURN_ADDRESS with slot=-1 through CacheActions (cache-level, no cell).
+        var view = CacheActions.open(player);
+        var before = ledger.find(handle.cacheId());
+        var result = CacheActions.execute(player, new CacheActions.Intent(view.session(), before.state().revision(),
+                CacheActions.Action.SET_RETURN_ADDRESS, -1, -1, -1, "FMP@origin"));
+        helper.assertTrue(result == CacheActions.Result.OK, "Intent-path return address was rejected: " + result);
+        helper.assertTrue("FMP@origin".equals(ledger.returnAddress(handle.cacheId())), "Intent path did not save the return address");
+        var saved = CacheLedger.load(ledger.save(new CompoundTag(), player.registryAccess()), player.registryAccess());
+        helper.assertTrue(saved.problem().isEmpty() && "FMP@origin".equals(saved.returnAddress(handle.cacheId())), "Saved return address did not survive reload");
         helper.succeed();
     }
 }

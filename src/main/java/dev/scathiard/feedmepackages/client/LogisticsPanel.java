@@ -449,7 +449,8 @@ public final class LogisticsPanel {
     private static boolean editReturnKey(int keyCode) {
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) { returnEditing = false; return true; }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            returnEditing = false; send(Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer); return true;
+            if (send(Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer)) returnEditing = false; else notice("result.stale");
+            return true;
         }
         if (keyCode == GLFW.GLFW_KEY_BACKSPACE) { if (!returnBuffer.isEmpty()) returnBuffer = returnBuffer.substring(0, returnBuffer.length() - 1); return true; }
         return false;
