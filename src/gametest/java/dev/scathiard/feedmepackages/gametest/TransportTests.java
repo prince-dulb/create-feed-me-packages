@@ -45,6 +45,7 @@ public final class TransportTests {
             tests.add(test("mobile_registry_roundtrip", TransportTests::mobileRegistryRoundtrip));
             tests.add(test("mobile_native_flight", TransportTests::mobileNativeFlight));
             tests.add(test("mobile_native_boundaries", TransportTests::mobileNativeBoundaries));
+            tests.add(test("return_mobile_dispatch", TransportTests::returnMobileDispatch));
         }
         if (ModList.get().isLoaded("cmpackagecouriers")) {
             tests.add(test("paper_native_flight", TransportTests::paperNativeFlight));
@@ -380,7 +381,43 @@ public final class TransportTests {
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Return paper dispatch experiment failed", failure); }
     }
 
-    private static ItemStack droppedStack(Entity entity) {        return entity instanceof PackageEntity parcel ? parcel.getBox() : entity instanceof ItemEntity item ? item.getItem() : ItemStack.EMPTY;
+    /** FMP's own automatic return through a real transport bee. The drone must fly inside the cache's
+     *  actual logistics network, so its UUID is the bee port's network — the reuse of a placeholder UUID
+     *  would spawn a drone that cannot resolve the return address. */
+    private static void returnMobileDispatch(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 0);
+        f.player().setPos(helper.absoluteVec(new Vec3(2, 2, 2))); helper.getLevel().addNewPlayer(f.player());
+        var portPos = new BlockPos(1, 1, 1);
+        var block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse("create_mobile_packages:bee_port"));
+        helper.setBlock(portPos, block.defaultBlockState());
+        block.setPlacedBy(helper.getLevel(), helper.absolutePos(portPos), helper.getBlockState(portPos), f.player(), new ItemStack(block));
+        try {
+            var port = helper.getBlockEntity(portPos); var portType = port.getClass();
+            var network = (UUID)portType.getMethod("getLogisticsNetworkId").invoke(port);
+            TestPlayers.necklace(f.player()).getStackInSlot(0).set(FmpRegistries.NETWORK.get(), network);
+            var joinType = Class.forName("de.theidler.create_mobile_packages.network_settings.AddPlayerToNetworkPackage");
+            joinType.getMethod("handle", net.minecraft.server.level.ServerPlayer.class).invoke(
+                    joinType.getConstructor(UUID.class, UUID.class).newInstance(f.player().getUUID(), network), f.player());
+            f.ledger().setReturnAddress(f.handle().cacheId(), SupplyService.address(f.player()));
+            var before = f.record(); var edit = before.state().edit();
+            edit.thresholds(0, 0, 1); edit.insert(0, f.key(), 100);
+            f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish()));
+            f.player().getInventory().setItem(0, new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("create_mobile_packages:robo_bee"))));
+            helper.startSequence()
+                    .thenExecute(() -> ReturnService.check(f.player()))
+                    .thenWaitUntil(() -> helper.assertTrue(f.record().state().cells().getFirst().amount() == 64,
+                            "Bee return dispatch did not trim the cell to its maximum"))
+                    .thenWaitUntil(() -> helper.assertTrue(f.player().getInventory().getItem(0).getCount() == 0,
+                            "Bee return dispatch did not consume the bee carrier"))
+                    .thenWaitUntil(() -> helper.assertTrue(f.record().residual(f.key()).isEmpty(),
+                            "Bee return dispatch left a stray residual"))
+                    .thenExecute(() -> FeedMePackages.LOGGER.info("FMP_RETURN_MOBILE_DISPATCH_PASSED stock=64 carrier=0"))
+                    .thenSucceed();
+        } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Return mobile dispatch experiment failed", failure); }
+    }
+
+    private static ItemStack droppedStack(Entity entity) {
+        return entity instanceof PackageEntity parcel ? parcel.getBox() : entity instanceof ItemEntity item ? item.getItem() : ItemStack.EMPTY;
     }
 
     private static void paperRegistryRoundtrip(GameTestHelper helper) {

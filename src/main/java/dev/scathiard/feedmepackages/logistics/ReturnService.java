@@ -61,7 +61,7 @@ public final class ReturnService {
             if (TransportDispatch.paperPlane(level, box, player.position()).dispatched()) { consumeCarrier(player, handle, CARD); return true; }
         }
         if (BEE != net.minecraft.world.item.Items.AIR && haveCarrier(player, handle, BEE)) {
-            if (TransportDispatch.bee(level, box, player.blockPosition()).dispatched()) { consumeCarrier(player, handle, BEE); return true; }
+            if (TransportDispatch.bee(level, box, player.blockPosition(), handle.networkId()).dispatched()) { consumeCarrier(player, handle, BEE); return true; }
         }
         return false;
     }

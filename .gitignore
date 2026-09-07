@@ -23,7 +23,7 @@ release/**/*.jar
 compile-out.txt
 full-out.txt
 gt-out.txt
-release/v0.1.0-test.*/
+release/v*-test.*/
 
 # Internal project documents / collaboration rules (not for the public repo)
 docs/

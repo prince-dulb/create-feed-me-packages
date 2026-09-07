@@ -32,15 +32,17 @@ public final class TransportDispatch {
         }
     }
 
-    /** Try to send a package with a transport bee. dispatched=true means a drone was spawned. */
-    public static Result bee(ServerLevel level, ItemStack box, BlockPos spawnPos) {
+    /** Try to send a package with a transport bee. dispatched=true means a drone was spawned.
+     *  The drone must fly inside the cache's actual logistics network so it can resolve the return
+     *  target at the address on the box; a placeholder UUID would spawn a drone that can never locate it. */
+    public static Result bee(ServerLevel level, ItemStack box, BlockPos spawnPos, java.util.UUID network) {
         if (!present("de.theidler.create_mobile_packages.robo.RoboManager")) return new Result(false, "bee");
         try {
             Class<?> roboManager = Class.forName("de.theidler.create_mobile_packages.robo.RoboManager");
             Object manager = roboManager.getMethod("get", ServerLevel.class).invoke(null, level);
             Method newRobo = roboManager.getMethod("newRobo", ServerLevel.class, ItemStack.class, BlockPos.class, java.util.UUID.class,
                     float.class, BlockPos.class, boolean.class);
-            Object uuid = newRobo.invoke(manager, level, box, spawnPos, java.util.UUID.randomUUID(), 0f, null, false);
+            Object uuid = newRobo.invoke(manager, level, box, spawnPos, network, 0f, null, false);
             return new Result(uuid != null, "bee");
         } catch (Throwable failure) {
             return new Result(false, "bee");
