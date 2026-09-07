@@ -23,6 +23,14 @@ release/**/*.jar
 compile-out.txt
 full-out.txt
 gt-out.txt
+release/v0.1.0-test.*/
+
+# Internal project documents / collaboration rules (not for the public repo)
+docs/
+AGENTS.md
+
+# Verification / generation tooling (not needed to build the mod)
+tools/
 
 # Archived legacy & reference implementations (not part of the repo history)
 legacy-root-test12/
@@ -39,3 +47,4 @@ reference/
 # Legacy one-off migration / patch scripts
 patch_*.py
 list_errors.py
+

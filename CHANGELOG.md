@@ -1,12 +1,12 @@
 # Changelog ｜ 更新日志
 
-本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本代号 `test.N` 为内部测试构建，正式版本才进入「Unreleased / 已发布」段。
+本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。版本代号 `test.N` 为内部测试构建，正式版本才进入「Unreleased / 已发布」段。项目内部规划文档不随源代码仓库公开，见维护者工作副本。
 
 ## [Unreleased] ｜ 未发布
 
 ### 计划中 / Planned
 - `v0.2.0` 真实退货与 `v0.3.0` 插件构筑。
-- 见 [路线图](docs/开发计划书/版本路线图.md)（中文）与 README Roadmap。
+- 见 README Roadmap。
 
 ---
 

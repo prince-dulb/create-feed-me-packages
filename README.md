@@ -37,7 +37,7 @@ JEI, Package Couriers and Mobile Packages are **optional** compat targets; the m
 - When the cached stock drops below the minimum, FMP sends a **real Create request** to the bound network; the delivered package is unpacked automatically (with a per-cell residual when your inventory is full).
 - **Made to Order**: smith an ordinary pendant with a Personalization Link to lock it to you. Only you can use that personal cache and upgrade it (smithing each link advances one tier, up to tier 5). Anyone else who wears it gets a fresh ordinary pendant instead.
 
-> See `docs/项目计划书.md` (plan-v2.0, Chinese) for the current authoritative design and open gates, and `docs/` for the full research & development plan.
+> This repository contains the **source and build config** only. The project's internal planning docs (`docs/`, full collaboration record) and per-test-build release archives are intentionally **not** committed here — they live in the maintainer's working copy. Download built releases from the [Releases](../../releases) page.
 
 ## 🗺️ Roadmap / 路线图
 
@@ -64,8 +64,4 @@ Released under the **MIT License** (© 2026 Scathiard). See [LICENSE](LICENSE) a
 
 - **Create** (MIT) and **Curios** (LGPL-3.0-or-later) are required dependencies resolved separately.
 - Mod ID / Maven group: `dev.scathiard` · Java root package: `dev.scathiard.feedmepackages`.
-
-## 📚 Documentation / 文档
-
-- **[plan-v2.0 project plan](docs/项目计划书.md)** (产品权威, 中文)
-- **[Development plan](docs/开发计划书/README.md)**, **[status](docs/开发状态.md)**, **[team log](docs/团队通信.md)**
+- Project lead: **Scathiard**.
