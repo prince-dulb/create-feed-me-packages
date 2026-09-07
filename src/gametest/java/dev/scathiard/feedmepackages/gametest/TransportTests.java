@@ -3,6 +3,8 @@ package dev.scathiard.feedmepackages.gametest;
 import com.simibubi.create.AllDataComponents;
 import dev.scathiard.feedmepackages.FeedMePackages;
 import dev.scathiard.feedmepackages.logistics.ParcelAuthentication;
+import dev.scathiard.feedmepackages.logistics.ReturnService;
+import dev.scathiard.feedmepackages.logistics.SupplyService;
 import dev.scathiard.feedmepackages.registry.FmpRegistries;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -48,6 +50,7 @@ public final class TransportTests {
             tests.add(test("paper_native_flight", TransportTests::paperNativeFlight));
             tests.add(test("paper_registry_roundtrip", TransportTests::paperRegistryRoundtrip));
             tests.add(test("paper_native_boundaries", TransportTests::paperNativeBoundaries));
+            tests.add(test("return_paper_dispatch", TransportTests::returnPaperDispatch));
         }
         return tests;
     }
@@ -349,8 +352,35 @@ public final class TransportTests {
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Paper flight experiment failed", failure); }
     }
 
-    private static ItemStack droppedStack(Entity entity) {
-        return entity instanceof PackageEntity parcel ? parcel.getBox() : entity instanceof ItemEntity item ? item.getItem() : ItemStack.EMPTY;
+    /** FMP's own automatic return: trim a cell above its maximum by dispatching the overage back to the
+     *  per-cache return address (here the player itself) through a consumed cardboard-plane carrier. */
+    private static void returnPaperDispatch(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 0);
+        f.player().setPos(helper.absoluteVec(new Vec3(2, 2, 2))); helper.getLevel().addNewPlayer(f.player());
+        TestPlayers.necklace(f.player()).getStackInSlot(0).set(FmpRegistries.NETWORK.get(), UUID.randomUUID());
+        f.ledger().setReturnAddress(f.handle().cacheId(), SupplyService.address(f.player()));
+        var before = f.record(); var edit = before.state().edit();
+        edit.thresholds(0, 0, 1); edit.insert(0, f.key(), 100);
+        f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish()));
+        f.player().getInventory().setItem(0, new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("cmpackagecouriers:cardboard_plane_parts"))));
+        var transmitter = new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("cmpackagecouriers:location_transmitter")));
+        try {
+            transmitter.getItem().getClass().getMethod("setEnabled", ItemStack.class, boolean.class).invoke(null, transmitter, true);
+            transmitter.getItem().inventoryTick(transmitter, helper.getLevel(), f.player(), 0, false);
+            helper.startSequence()
+                    .thenExecute(() -> ReturnService.check(f.player()))
+                    .thenWaitUntil(() -> helper.assertTrue(f.record().state().cells().getFirst().amount() == 64,
+                            "Return dispatch did not trim the cell to its maximum"))
+                    .thenWaitUntil(() -> helper.assertTrue(f.player().getInventory().getItem(0).getCount() == 0,
+                            "Return dispatch did not consume the cardboard carrier"))
+                    .thenWaitUntil(() -> helper.assertTrue(f.record().residual(f.key()).isEmpty(),
+                            "Return dispatch left a stray residual"))
+                    .thenExecute(() -> FeedMePackages.LOGGER.info("FMP_RETURN_PAPER_DISPATCH_PASSED stock=64 carrier=0"))
+                    .thenSucceed();
+        } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Return paper dispatch experiment failed", failure); }
+    }
+
+    private static ItemStack droppedStack(Entity entity) {        return entity instanceof PackageEntity parcel ? parcel.getBox() : entity instanceof ItemEntity item ? item.getItem() : ItemStack.EMPTY;
     }
 
     private static void paperRegistryRoundtrip(GameTestHelper helper) {
