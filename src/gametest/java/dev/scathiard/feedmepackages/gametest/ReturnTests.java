@@ -62,4 +62,19 @@ public final class ReturnTests {
         helper.assertTrue(saved.problem().isEmpty() && "FMP@origin".equals(saved.returnAddress(handle.cacheId())), "Saved return address did not survive reload");
         helper.succeed();
     }
+
+    @GameTest(template = "empty")
+    public static void noReturnMarkerSurvivesUpgrade(GameTestHelper helper) {
+        var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack());
+        var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer()); var handle = access.handle();
+        var key = ItemVariantKey.of(new ItemStack(Items.STONE), player.registryAccess());
+        var before = ledger.find(handle.cacheId()); var edit = before.state().edit();
+        // max=-1 = "no return": a semantic marker that survives upgrades (the client displays it as
+        // the capacity full position, so the thumb follows new capacities automatically).
+        edit.filter(0, key); edit.thresholds(0, 0, -1); edit.upgrade();
+        ledger.replace(handle, before.state().revision(), before.withState(edit.finish()));
+        var cell = ledger.find(handle.cacheId()).state().cells().get(0);
+        helper.assertTrue(cell.maximum() == -1, "No-return marker should survive the upgrade: " + cell.maximum());
+        helper.succeed();
+    }
 }
