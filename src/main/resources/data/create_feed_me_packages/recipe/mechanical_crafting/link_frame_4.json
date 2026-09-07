@@ -1,0 +1,27 @@
+{
+  "type": "create:mechanical_crafting",
+  "category": "misc",
+  "pattern": [
+    " B B",
+    " PT ",
+    " T P",
+    "B B "
+  ],
+  "key": {
+    "B": {
+      "item": "create:brass_casing"
+    },
+    "P": {
+      "item": "create:precision_mechanism"
+    },
+    "T": {
+      "item": "create_feed_me_packages:link_frame_3"
+    }
+  },
+  "result": {
+    "id": "create_feed_me_packages:link_frame_4",
+    "count": 1
+  },
+  "accept_mirrored": false,
+  "show_notification": false
+}

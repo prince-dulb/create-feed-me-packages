@@ -1,0 +1,67 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": {
+    "item": "minecraft:ender_pearl"
+  },
+  "transitional_item": {
+    "id": "create_feed_me_packages:incomplete_private_link"
+  },
+  "loops": 1,
+  "sequence": [
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_private_link"
+        },
+        {
+          "item": "create:brass_sheet"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_private_link"
+        }
+      ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_private_link"
+        },
+        {
+          "item": "create:electron_tube"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_private_link"
+        }
+      ]
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_private_link"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_private_link"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "id": "create_feed_me_packages:private_link",
+      "chance": 4.0
+    },
+    {
+      "id": "minecraft:ender_pearl",
+      "chance": 1.0
+    }
+  ]
+}

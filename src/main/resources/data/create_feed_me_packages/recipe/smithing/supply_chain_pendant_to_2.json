@@ -1,0 +1,17 @@
+{
+  "type": "create_feed_me_packages:pendant_smithing",
+  "template": {
+    "item": "create_feed_me_packages:assembly_template"
+  },
+  "base": {
+    "item": "create_feed_me_packages:supply_chain_pendant"
+  },
+  "addition": {
+    "item": "create_feed_me_packages:upgrade_link_2"
+  },
+  "result": {
+    "id": "create_feed_me_packages:supply_chain_pendant",
+    "count": 1
+  },
+  "target_level": 2
+}

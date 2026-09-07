@@ -1,0 +1,10 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.scathiard.feedmepackages.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "dev.scathiard.feedmepackages.mixin.OptionalMixins",
+  "mixins": ["PackageStampMixin", "InventoryReceiveMixin", "MobileReceiveMixin", "MobileStorageMixin", "PaperStorageMixin", "PlayerAmmoMixin", "ProjectileAmmoMixin", "CraftingItemsAccess", "RecipeBookPlacementMixin", "CraftingRefillMixin", "CraftingClickMixin", "CraftingQuickMoveMixin", "CraftingPickupMixin", "SmithingMenuMixin", "SmithingClickMixin", "SmithingQuickMoveMixin", "SmithingPacketMixin"],
+  "client": ["ContainerScreenAccess", "RecipeBookHintsMixin", "RecipeCollectionHintsMixin"],
+  "injectors": {"defaultRequire": 1}
+}

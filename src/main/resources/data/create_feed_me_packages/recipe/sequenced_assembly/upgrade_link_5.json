@@ -1,0 +1,100 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": {
+    "item": "create_feed_me_packages:link_frame_5"
+  },
+  "transitional_item": {
+    "id": "create_feed_me_packages:incomplete_link_5"
+  },
+  "loops": 1,
+  "sequence": [
+    {
+      "type": "create:filling",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_5"
+        },
+        {
+          "type": "neoforge:single",
+          "amount": 250,
+          "fluid": "minecraft:lava"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_5"
+        }
+      ]
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_5"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_5"
+        }
+      ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_5"
+        },
+        {
+          "item": "create:precision_mechanism"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_5"
+        }
+      ]
+    },
+    {
+      "type": "create:filling",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_5"
+        },
+        {
+          "type": "neoforge:single",
+          "amount": 250,
+          "fluid": "minecraft:water"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_5"
+        }
+      ]
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_5"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_5"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "id": "create_feed_me_packages:upgrade_link_5",
+      "chance": 4.0
+    },
+    {
+      "id": "create:powdered_obsidian",
+      "chance": 1.0
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+b08022a550dc3b30e4fc9043dcb4a291ca9bf1af8e0fd4899306e196ebdfdb2c *release/v0.1.0-test.10/create-feed-me-packages-0.1.0.jar

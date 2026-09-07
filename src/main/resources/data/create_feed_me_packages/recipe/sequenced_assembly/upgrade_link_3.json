@@ -1,0 +1,67 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": {
+    "item": "create_feed_me_packages:link_frame_3"
+  },
+  "transitional_item": {
+    "id": "create_feed_me_packages:incomplete_link_3"
+  },
+  "loops": 1,
+  "sequence": [
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_3"
+        },
+        {
+          "item": "create:cogwheel"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_3"
+        }
+      ]
+    },
+    {
+      "type": "create:deploying",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_3"
+        },
+        {
+          "item": "create:electron_tube"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_3"
+        }
+      ]
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_3"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_3"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "id": "create_feed_me_packages:upgrade_link_3",
+      "chance": 4.0
+    },
+    {
+      "id": "create:brass_nugget",
+      "chance": 1.0
+    }
+  ]
+}

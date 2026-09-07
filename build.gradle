@@ -1,0 +1,200 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.107'
+    id 'idea'
+}
+
+group = mod_group_id
+version = mod_version
+
+layout.buildDirectory = file('../.fmp-build-safe')
+def runProfile = "neo${project.neo_version}" + (project.hasProperty('withCouriers') ? '-paper' : '') +
+        (project.hasProperty('withMobile') ? '-mobile' : '') +
+        (project.hasProperty('withJei') ? "-jei${project.findProperty('jei_runtime_version') ?: jei_version}" : '') + '-model8'
+if (project.hasProperty('fmpPackaged')) {
+    if (project.hasProperty('fmpGameTests') || project.hasProperty('fmpClientReview')) throw new GradleException('Packaged verification cannot load development test sources')
+    runProfile += '-packaged'
+}
+if (project.hasProperty('fmpProbeMissing')) {
+    def missing = project.property('fmpProbeMissing')
+    if (!(missing in ['create', 'curios'])) throw new GradleException('Unknown required dependency probe')
+    runProfile += "-missing-${missing}"
+}
+
+base {
+    archivesName = 'create-feed-me-packages'
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+
+sourceSets {
+    gameTest {
+        java.setSrcDirs(['src/gametest/java'])
+        resources.setSrcDirs(['src/gametest/resources'])
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+repositories {
+    maven { url = 'https://maven.createmod.net' }
+    maven { url = 'https://maven.ithundxr.dev/snapshots' }
+    maven { url = 'https://maven.blamejared.com' }
+    maven { url = 'https://maven.theillusivec4.top/' }
+    maven { url = 'https://raw.githubusercontent.com/Fuzss/modresources/main/maven' }
+}
+
+configurations {
+    runtimeClasspath.extendsFrom localRuntime
+    gameTestImplementation.extendsFrom implementation
+    gameTestCompileOnly.extendsFrom compileOnly
+    gameTestRuntimeOnly.extendsFrom runtimeOnly, localRuntime
+}
+
+dependencies {
+    implementation("com.simibubi.create:create-1.21.1:${create_version}:slim") {
+        transitive = false
+    }
+
+    compileOnly "com.tterrag.registrate:Registrate:${registrate_version}"
+    compileOnly "net.createmod.ponder:ponder-neoforge:${ponder_version}"
+    compileOnly "dev.engine-room.flywheel:flywheel-neoforge-api-1.21.1:${flywheel_version}"
+    compileOnly "top.theillusivec4.curios:curios-neoforge:${curios_version}:api"
+
+    localRuntime "com.tterrag.registrate:Registrate:${registrate_version}"
+    localRuntime "net.createmod.ponder:ponder-neoforge:${ponder_version}"
+    localRuntime "dev.engine-room.flywheel:flywheel-neoforge-1.21.1:${flywheel_version}"
+    localRuntime "dev.engine-room.vanillin:vanillin-neoforge-1.21.1:${vanillin_version}"
+    localRuntime "top.theillusivec4.curios:curios-neoforge:${curios_version}"
+    if (project.hasProperty('fmpPackaged')) {
+        def artifact = layout.buildDirectory.file("libs/create-feed-me-packages-${project.version}.jar").get().asFile
+        if (!artifact.isFile()) throw new GradleException('Build the main JAR before packaged verification')
+        localRuntime files(artifact)
+    }
+
+    compileOnly "mezz.jei:jei-1.21.1-common-api:${jei_version}"
+    compileOnly "mezz.jei:jei-1.21.1-neoforge-api:${jei_version}"
+    if (project.hasProperty('withJei')) {
+        localRuntime "mezz.jei:jei-1.21.1-neoforge:${project.findProperty('jei_runtime_version') ?: jei_version}"
+    }
+    if (project.hasProperty('withMobile')) {
+        localRuntime files('../.fmp-reference-build-safe/research/transports/1.21.1-0.7.7/create_mobile_packages-1.21.1-0.7.7.jar')
+    }
+    if (project.hasProperty('withCouriers')) {
+        localRuntime files('../.fmp-reference-build-safe/research/transports/2.3.0/cmpackagecouriers-neoforge-2.3.0.jar')
+    }
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+neoForge {
+    version = project.neo_version
+    addModdingDependenciesTo sourceSets.gameTest
+
+    parchment {
+        minecraftVersion = project.parchment_minecraft_version
+        mappingsVersion = project.parchment_mappings_version
+    }
+
+    runs {
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+            logLevel = org.slf4j.event.Level.INFO
+            jvmArgument '-Xmx2G'
+        }
+
+        client {
+            client()
+            gameDirectory = file("../.fmp-build-safe/run/client/${runProfile}")
+            if (project.hasProperty('fmpClientReview')) systemProperty 'fmp.clientReview', 'true'
+        }
+
+        server {
+            server()
+            gameDirectory = file("../.fmp-build-safe/run/server/${runProfile}")
+            programArgument '--nogui'
+        }
+
+        gameTestServer {
+            type = 'gameTestServer'
+            gameDirectory = file("../.fmp-build-safe/run/gametest/${runProfile}")
+            systemProperty 'fmp.requirePriorPersistence', project.findProperty('fmpRequirePriorPersistence') ?: 'false'
+        }
+    }
+
+    if (!project.hasProperty('fmpPackaged')) {
+        mods {
+            "${mod_id}" {
+                sourceSet sourceSets.main
+                if (project.hasProperty('fmpGameTests')) sourceSet sourceSets.gameTest
+            }
+        }
+    }
+}
+
+tasks.named('test', Test).configure {
+    useJUnitPlatform()
+}
+
+tasks.named('runServer', JavaExec).configure {
+    standardInput = System.in
+}
+
+if (project.hasProperty('fmpPackaged')) {
+    tasks.withType(net.neoforged.moddevgradle.internal.RunGameTask).configureEach {
+        def sourceOutputs = sourceSets.main.output.files
+        // Snapshot the input providers before replacing the collection, avoiding a self-referential filter.
+        def originalRuntime = project.files(new ArrayList<>(classpathProvider.from))
+        classpathProvider.setFrom(originalRuntime.filter { !sourceOutputs.contains(it) })
+        setClasspath(project.files(classpath.files.findAll { !sourceOutputs.contains(it) }))
+        doFirst {
+            def paths = classpathProvider.files + classpath.files
+            def artifacts = paths.findAll { it.name == "create-feed-me-packages-${project.version}.jar" }
+            if (paths.any { sourceOutputs.contains(it) } || artifacts.size() != 1) throw new GradleException('Packaged run contains development outputs or lacks its single main JAR')
+            println "FMP_PACKAGED_SOURCE jar=${artifacts.first()} developmentOutputs=0"
+        }
+    }
+}
+
+tasks.named('wrapper', Wrapper).configure {
+    gradleVersion = '8.12'
+    distributionType = Wrapper.DistributionType.BIN
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+tasks.withType(ProcessResources).configureEach {
+    filteringCharset = 'UTF-8'
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    inputs.property('mod_version', project.mod_version)
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand(mod_version: project.mod_version)
+    }
+}
+
+tasks.named('jar', Jar).configure {
+    archiveFileName = "create-feed-me-packages-${project.version}.jar"
+    manifest.attributes([
+            'Specification-Title'   : mod_name,
+            'Specification-Version' : mod_version,
+            'Implementation-Title'  : project.name,
+            'Implementation-Version': mod_version
+    ])
+}
+
+tasks.withType(Jar).configureEach {
+    from('LICENSE') { into 'META-INF' }
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}

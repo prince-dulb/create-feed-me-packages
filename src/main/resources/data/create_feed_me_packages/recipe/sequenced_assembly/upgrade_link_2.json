@@ -1,0 +1,62 @@
+{
+  "type": "create:sequenced_assembly",
+  "ingredient": {
+    "item": "create_feed_me_packages:link_frame_2"
+  },
+  "transitional_item": {
+    "id": "create_feed_me_packages:incomplete_link_2"
+  },
+  "loops": 1,
+  "sequence": [
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_2"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_2"
+        }
+      ]
+    },
+    {
+      "type": "create:cutting",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_2"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_2"
+        }
+      ],
+      "processing_time": 80
+    },
+    {
+      "type": "create:pressing",
+      "ingredients": [
+        {
+          "item": "create_feed_me_packages:incomplete_link_2"
+        }
+      ],
+      "results": [
+        {
+          "id": "create_feed_me_packages:incomplete_link_2"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "id": "create_feed_me_packages:upgrade_link_2",
+      "chance": 4.0
+    },
+    {
+      "id": "minecraft:iron_nugget",
+      "chance": 1.0
+    }
+  ]
+}

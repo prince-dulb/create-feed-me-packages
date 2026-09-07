@@ -1,0 +1,6 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "ingredients": [{"item": "create_feed_me_packages:test_milk_capsule"}],
+  "result": {"id": "minecraft:sugar", "count": 1}
+}

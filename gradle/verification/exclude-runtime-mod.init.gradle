@@ -1,0 +1,24 @@
+gradle.afterProject { candidate ->
+    if (candidate != candidate.rootProject) {
+        return
+    }
+
+    def excludedPrefix = candidate.findProperty('fmpExcludedRuntimeJarPrefix')
+    if (!excludedPrefix) {
+        return
+    }
+
+    def probeName = candidate.findProperty('fmpDependencyProbeName') ?: excludedPrefix
+    candidate.tasks.matching { it.name == 'runServer' }.configureEach { runTask ->
+        runTask.gameDirectory.set(candidate.layout.projectDirectory.dir("run/dependency-probe-${probeName}"))
+        def originalFiles = runTask.classpathProvider.files
+        def filteredFiles = originalFiles.findAll { !it.name.startsWith(excludedPrefix) }
+        if (filteredFiles.size() == originalFiles.size()) {
+            throw new GradleException(
+                    "No runtime classpath entry matched prefix: ${excludedPrefix}. " +
+                            "Available: ${originalFiles.collect { it.name }.join(',')}"
+            )
+        }
+        runTask.classpathProvider.setFrom(filteredFiles)
+    }
+}

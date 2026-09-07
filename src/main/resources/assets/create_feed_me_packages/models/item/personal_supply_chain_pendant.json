@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "create_feed_me_packages:item/personal_supply_chain_pendant"
+  }
+}

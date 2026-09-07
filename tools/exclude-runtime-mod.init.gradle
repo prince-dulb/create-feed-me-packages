@@ -1,0 +1,10 @@
+// Explicit verification only. Keep compilation and normal runs unchanged.
+gradle.projectsEvaluated {
+    def project = gradle.rootProject
+    def missing = project.findProperty('fmpProbeMissing')
+    if (!(missing in ['create', 'curios'])) throw new GradleException('Pass -PfmpProbeMissing=create or curios')
+    project.configurations.named('runtimeClasspath').configure {
+        if (missing == 'create') exclude group: 'com.simibubi.create', module: 'create-1.21.1'
+        else exclude group: 'top.theillusivec4.curios', module: 'curios-neoforge'
+    }
+}

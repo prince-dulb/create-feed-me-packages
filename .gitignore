@@ -1,0 +1,41 @@
+﻿.gradle/
+build/
+run/
+out/
+bin/
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+eclipse/
+src/generated/resources/.cache/
+
+!gradle/wrapper/gradle-wrapper.jar
+
+# Generated / local runtime
+logs/
+
+# Build artifacts (regenerable) — keep the release/*.md records, ignore the jars
+release/**/*.jar
+*.mp4
+*.out
+compile-out.txt
+full-out.txt
+gt-out.txt
+
+# Archived legacy & reference implementations (not part of the repo history)
+legacy-root-test12/
+legacy-root-test17-src/
+reference/
+
+# Dev screenshots / screen recordings
+参考/
+测试录屏/
+
+# Editor cache
+.obsidian/
+
+# Legacy one-off migration / patch scripts
+patch_*.py
+list_errors.py
