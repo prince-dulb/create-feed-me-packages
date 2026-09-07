@@ -43,6 +43,8 @@ public final class LogisticsPanel {
     private static boolean draggingSlider;
     private static int capturedButton = -1;
     private static EditBox number;
+    private static boolean returnEditing;
+    private static String returnBuffer = "";
     private static Component feedback;
     private static int feedbackUntil;
     private static List<Component> tooltip = List.of();
@@ -83,10 +85,17 @@ public final class LogisticsPanel {
             if (current(event.getScreen()) && scroll(event.getMouseX(), event.getMouseY(), event.getScrollDeltaY())) event.setCanceled(true);
         });
         bus.addListener((ScreenEvent.KeyPressed.Pre event) -> {
-            if (current(event.getScreen()) && key(event.getKeyCode(), event.getScanCode(), event.getModifiers())) event.setCanceled(true);
+            if (!current(event.getScreen())) return;
+            if (returnEditing && editReturnKey(event.getKeyCode())) { event.setCanceled(true); return; }
+            if (key(event.getKeyCode(), event.getScanCode(), event.getModifiers())) event.setCanceled(true);
         });
         bus.addListener((ScreenEvent.CharacterTyped.Pre event) -> {
-            if (current(event.getScreen()) && number != null) { number.charTyped(event.getCodePoint(), event.getModifiers()); event.setCanceled(true); }
+            if (!current(event.getScreen())) return;
+            if (number != null) { number.charTyped(event.getCodePoint(), event.getModifiers()); event.setCanceled(true); }
+            else if (returnEditing) {
+                if (returnBuffer.length() < 128 && event.getCodePoint() >= 32 && event.getCodePoint() <= 0xFFFF) returnBuffer += new String(Character.toChars(event.getCodePoint()));
+                event.setCanceled(true);
+            }
         });
         bus.addListener((ScreenEvent.Closing event) -> { if (event.getScreen() == screen && !retainTransition) close(); });
     }
@@ -119,7 +128,7 @@ public final class LogisticsPanel {
         if (window != null && MC.getConnection() != null && MC.player != null)
             PacketDistributor.sendToServer(new PanelPackets.Query(window, MC.player.containerMenu.containerId, false));
         screen = null; window = null; snapshot = null; layout = null; waiting = 0; serial = -1;
-        selected = -1; firstRow = 0; draggingSlider = false; capturedButton = -1; number = null;
+        selected = -1; firstRow = 0; draggingSlider = false; capturedButton = -1; number = null; returnEditing = false; returnBuffer = "";
         tooltip = List.of(); ICONS.clear(); feedback = null;
     }
     private static void receive(PanelPackets.Snapshot incoming) {
@@ -201,6 +210,7 @@ public final class LogisticsPanel {
         if (active()) {
             for (var cell : layout.cells()) renderCell(g, cell);
             if (layout.slider() != null) renderSlider(g);
+            if (layout.returnBar() != null) renderReturnBar(g);
         }
         int fy = layout.footerY();
         if (waiting != 0) overlay(g, x + 4, y + 20, 4, 2, 0xFFE6C178);
@@ -269,6 +279,22 @@ public final class LogisticsPanel {
         if (new PanelLayout.Rect(x + r.width() - 11, y + 10, 11, 12).contains(mouseX, mouseY)) tooltip = List.of(tr("reset", cell.pending()));
         g.pose().popPose();
     }
+    private static void renderReturnBar(GuiGraphics g) {
+        var r = layout.returnBar();
+        int x = r.x(), y = r.y(), w = r.width(), h = r.height();
+        // A single per-cache return-address field below the grid (no send button; returns are automatic).
+        g.fill(x - 1, y - 1, x + w + 1, y + h + 1, 0xFF262B26);
+        g.fill(x, y, x + w, y + h, 0xFF393C36);
+        g.fill(x + 3, y + 3, x + w - 3, y + h - 3, 0xFF3F4038);
+        String value = returnEditing ? returnBuffer : (snapshot.returnAddress() == null ? "" : snapshot.returnAddress());
+        String label = tr("return_label").getString();
+        int textWidth = w - MC.font.width(label) - 16;
+        String shown = MC.font.width(value) <= textWidth ? value : MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - MC.font.width("…"))) + "…";
+        text(g, label, x + 5, y + h / 2 - MC.font.lineHeight / 2, 0xFFB9B0A0);
+        text(g, shown, x + 6 + MC.font.width(label), y + h / 2 - MC.font.lineHeight / 2, returnEditing ? 0xFFF5EEDD : 0xFFCFC7B2);
+        if (r.contains(mouseX, mouseY)) tooltip = List.of(tr(returnEditing ? "return_editing" : "return_hint"));
+    }
+
     private static void frame(GuiGraphics g, PanelLayout.Rect b) {
         int x = b.x(), y = b.y(), w = b.width(), h = b.height();
         g.fill(x, y, x + w, y + h, 0xFF242521); g.fill(x + 1, y + 1, x + w - 1, y + h - 1, 0xFF939487);
@@ -308,6 +334,9 @@ public final class LogisticsPanel {
         if (x >= px + layout.bounds().width() - 4 && y >= py + PanelLayout.HEADER && y < fy) {
             firstRow = (int)((y - py - PanelLayout.HEADER) * Math.max(0, layout.totalRows() - layout.visibleRows()) / Math.max(1, fy - py - PanelLayout.HEADER));
             selected = -1; updateLayout(); return true;
+        }
+        if (active() && layout.returnBar() != null && layout.returnBar().contains(x, y)) {
+            returnEditing = true; returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress(); return true;
         }
         if (!active()) return true;
         var slider = layout.slider();
@@ -369,6 +398,14 @@ public final class LogisticsPanel {
             return true;
         }
         return visible() && waiting != 0 && key != GLFW.GLFW_KEY_ESCAPE;
+    }
+    private static boolean editReturnKey(int keyCode) {
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) { returnEditing = false; return true; }
+        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+            returnEditing = false; send(Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer); return true;
+        }
+        if (keyCode == GLFW.GLFW_KEY_BACKSPACE) { if (!returnBuffer.isEmpty()) returnBuffer = returnBuffer.substring(0, returnBuffer.length() - 1); return true; }
+        return false;
     }
     private static void commitNumber() {
         if (number == null) return;

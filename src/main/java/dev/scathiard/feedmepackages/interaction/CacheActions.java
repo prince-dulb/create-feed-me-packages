@@ -18,7 +18,7 @@ import java.util.*;
 /** Server-side panel intent interpreter. A session is context, never a substitute for current access. */
 public final class CacheActions {
     private CacheActions() {}
-    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE }
+    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS }
     public enum Result { OK, STALE, NOT_ACTIVE, INVALID_ITEM, DUPLICATE_FILTER, FILTER_OCCUPIED, NO_SPACE, INVALID_REQUEST, MISSING_MATERIAL, UNSUPPORTED_RECIPE, TOO_COMPLEX }
     public record Intent(UUID session, long revision, Action action, int slot, int first, int second, String template) {
         public Intent {
@@ -146,6 +146,11 @@ public final class CacheActions {
                 catch (IllegalArgumentException invalid) { return Result.INVALID_REQUEST; }
             }
             case RESET_REQUEST -> edit.reset(slot);
+            case SET_RETURN_ADDRESS -> {
+                if (intent.template().length() > 128) return Result.INVALID_REQUEST;
+                if (intent.template().equals(ledger.returnAddress(access.handle().cacheId()))) return Result.OK;
+                ledger.setReturnAddress(access.handle().cacheId(), intent.template());
+            }
             default -> { return Result.INVALID_REQUEST; }
         }
         if (inventoryPlan != null && !inventoryPlan.stillValid(player.getInventory())) return Result.STALE;

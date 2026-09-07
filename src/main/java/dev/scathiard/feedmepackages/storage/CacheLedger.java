@@ -21,13 +21,14 @@ import java.util.*;
 /** One world authority. Corrupt data produces a locked ledger, never an empty replacement. */
 public final class CacheLedger extends SavedData {
     public static final String NAME = "create_feed_me_packages_ledger";
-    public static final int SCHEMA = 7; // Per-item-cell residuals; personal pendants are owner-locked (no capacity-grant entitlement flow).
+    public static final int SCHEMA = 8; // Adds a per-cache default return address for automatic real returns (v0.2.0).
     public static final int MAX_REDIRECT_VARIANTS = 4096;
     private static final Factory<CacheLedger> FACTORY = new Factory<>(CacheLedger::new, CacheLedger::load);
     private Map<UUID, CacheRecord> caches = Map.of();
     private Map<UUID, UUID> personal = Map.of();
     private Map<UUID, Boolean> cacheFirst = Map.of();
     private Map<UUID, ParcelRedirect> redirects = Map.of();
+    private Map<UUID, String> returnAddresses = Map.of();
     private String problem = "";
     private CompoundTag preserved;
     private byte[] integrityKey = createIntegrityKey();
@@ -73,6 +74,12 @@ public final class CacheLedger extends SavedData {
     public boolean isOwner(UUID cacheId, UUID player) {
         var record = caches.get(cacheId);
         return record != null && record.owner() != null && record.owner().equals(player);
+    }
+    public String returnAddress(UUID cacheId) { return returnAddresses.get(cacheId); }
+    public void setReturnAddress(UUID cacheId, String address) {
+        writable(); var next = new HashMap<>(returnAddresses);
+        if (address == null) next.remove(cacheId); else next.put(cacheId, address);
+        returnAddresses = Map.copyOf(next); setDirty();
     }
 
     public record ParcelTarget(UUID cacheId, long revision) {}
@@ -265,16 +272,19 @@ public final class CacheLedger extends SavedData {
                 var mapping = new CompoundTag(); mapping.putString("variant", old.variant().encoded()); mapping.putLong("before", old.revision()); mapping.putLong("after", revision); variants.add(mapping);
             }); row.put("variants", variants); routeRows.add(row);
         }); tag.put("redirects", routeRows);
+        ListTag returnRows = new ListTag();
+        returnAddresses.forEach((cacheId, address) -> { var data = new CompoundTag(); data.putUUID("cache", cacheId); data.putString("address", address); returnRows.add(data); });
+        tag.put("returnAddresses", returnRows);
         return tag;
     }
 
     public static CacheLedger load(CompoundTag tag, HolderLookup.Provider registries) {
         var ledger = new CacheLedger();
         try {
-            fields(tag, Set.of("schema", "integrity_key", "caches", "preferences", "redirects", "grants"));
+            fields(tag, Set.of("schema", "integrity_key", "caches", "preferences", "redirects", "grants", "returnAddresses"));
             require(tag, "schema", Tag.TAG_INT);
             int sourceSchema = tag.getInt("schema");
-            if (sourceSchema != SCHEMA && sourceSchema != 2 && sourceSchema != 4 && sourceSchema != 5 && sourceSchema != 6)
+            if (sourceSchema != SCHEMA && sourceSchema != 2 && sourceSchema != 4 && sourceSchema != 5 && sourceSchema != 6 && sourceSchema != 7)
                 throw new IllegalArgumentException("Unsupported cache schema");
             require(tag, "integrity_key", Tag.TAG_BYTE_ARRAY);
             if (tag.getByteArray("integrity_key").length != 32) throw new IllegalArgumentException("Invalid world integrity state");
@@ -371,6 +381,15 @@ public final class CacheLedger extends SavedData {
             // Tolerate the field so old worlds still migrate their caches, but treat the grants as obsolete.
             ledger.caches = Map.copyOf(caches); ledger.personal = Map.copyOf(personal); ledger.cacheFirst = Map.copyOf(preferences);
             ledger.redirects = Map.copyOf(redirects);
+            var returnAddresses = new HashMap<UUID, String>();
+            if (tag.contains("returnAddresses")) {
+                for (Tag element : compounds(tag, "returnAddresses")) {
+                    var row = (CompoundTag)element;
+                    fields(row, Set.of("cache", "address")); require(row, "cache", Tag.TAG_INT_ARRAY); require(row, "address", Tag.TAG_STRING);
+                    if (returnAddresses.put(row.getUUID("cache"), row.getString("address")) != null) throw new IllegalArgumentException("Duplicate return address");
+                }
+            }
+            ledger.returnAddresses = Map.copyOf(returnAddresses);
         } catch (RuntimeException failure) {
             ledger.problem = "Cache data rejected: " + failure.getClass().getSimpleName();
             ledger.preserved = tag.copy();

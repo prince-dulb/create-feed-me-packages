@@ -70,7 +70,7 @@ public final class PanelNetwork {
         if (access.terminals().size() > PanelPackets.MAX_TERMINALS) {
             CacheActions.close(player);
             return new PanelPackets.Snapshot(window.id, null, ++window.serial, ack, CacheActions.Result.INVALID_REQUEST,
-                    AccessGate.Status.INVALID_IDENTITY, -1, 0, 0, false, false, false, "", "", List.of(), List.of());
+                    AccessGate.Status.INVALID_IDENTITY, -1, 0, 0, false, false, false, "", "", "", List.of(), List.of());
         }
         var terminals = access.terminals().stream().map(t -> new PanelPackets.TerminalView(t.slot(),
                 ((PendantItem)t.stack().getItem()).personal(), t.disabled(), t.network() == null ? "" : t.network().toString())).toList();
@@ -85,10 +85,12 @@ public final class PanelNetwork {
             for (var box : record.residuals().values())
                 if (!box.isEmpty()) { residualItem = BuiltInRegistries.ITEM.getKey(box.getItem()).toString(); break; }
         }
+        String returnAddress = access.active() && access.handle() != null
+                ? dev.scathiard.feedmepackages.storage.CacheLedger.get(player.getServer()).returnAddress(access.handle().cacheId()) : null;
         return new PanelPackets.Snapshot(window.id, view.session(), ++window.serial, ack, result, access.status(),
                 record == null ? -1 : record.state().revision(), record == null ? 0 : record.state().level(),
                 record == null ? 0 : CacheLevel.of(record.state().level()).capacity(), record != null && record.owner() != null,
                 view.cacheFirst(), access.active() && access.handle().networkId() != null, SupplyService.address(player),
-                residualItem, cells, terminals);
+                returnAddress == null ? "" : returnAddress, residualItem, cells, terminals);
     }
 }
