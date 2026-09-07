@@ -54,9 +54,15 @@ public final class AccessGate {
         UUID cacheId;
         if (stack.getItem() instanceof PendantItem pendant && pendant.personal()) {
             UUID owner = stack.get(FmpRegistries.OWNER.get());
-            if (owner == null || !owner.equals(player.getUUID())) {
-                // A personal pendant is a key belonging to its crafter. A non-owner (or a legacy pendant with an
-                // unknown owner) cannot touch the owner's cache: it degrades here to a fresh ordinary pendant.
+            if (owner == null) {
+                // An ownerless personal pendant is a blank key: the first player to wear it becomes its owner.
+                // (Future idea: place such pendants, already stocked, in structure loot tables as treasure.)
+                stack.set(FmpRegistries.OWNER.get(), player.getUUID());
+                stack.set(FmpRegistries.OWNER_NAME.get(), player.getGameProfile().getName());
+                owner = player.getUUID();
+            } else if (!owner.equals(player.getUUID())) {
+                // A personal pendant is a key belonging to its crafter. A non-owner cannot touch the owner's
+                // cache: it degrades here to a fresh ordinary pendant.
                 UUID id = ledger.createOrdinary();
                 ItemStack ordinary = new ItemStack(FmpRegistries.PENDANT.get());
                 ordinary.set(FmpRegistries.IDENTITY.get(), id);

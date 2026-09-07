@@ -137,6 +137,19 @@ public final class GrowthTests {
     }
 
     @GameTest(template = "empty")
+    public static void ownerlessPersonalPendantIsClaimedByItsFirstWearer(GameTestHelper helper) {
+        var player = TestPlayers.create(helper, FmpRegistries.PERSONAL_PENDANT.toStack()); var ledger = CacheLedger.get(player.getServer());
+        var access = AccessGate.resolve(player);
+        helper.assertTrue(access.active() && access.handle().playerId().equals(player.getUUID())
+                && ledger.personal(player.getUUID()) != null, "Ownerless pendant was not claimed by its first wearer");
+        var pendant = TestPlayers.necklace(player).getStackInSlot(0);
+        helper.assertTrue(player.getUUID().equals(pendant.get(FmpRegistries.OWNER.get())), "Wearing did not record the claiming owner");
+        helper.assertTrue(AccessGate.resolve(player).active() && AccessGate.resolve(player).handle().cacheId().equals(access.handle().cacheId()),
+                "Claimed pendant lost its personal cache");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void nativePersonalizationPreservesBindingOrdersAndItsActualResidual(GameTestHelper helper) {
         var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); helper.assertTrue(ReceiveService.receive(f.player(), f.box(32)), "Private smithing fixture failed");
         UUID target = f.ledger().personalOrCreate(f.player().getUUID()); var pendant = TestPlayers.necklace(f.player()).getStackInSlot(0); UUID network = UUID.randomUUID();
