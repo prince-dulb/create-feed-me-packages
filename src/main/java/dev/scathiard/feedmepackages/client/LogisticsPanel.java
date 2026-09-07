@@ -246,6 +246,10 @@ public final class LogisticsPanel {
             int color = cell.pending() > 0 ? 0xFF82C665 : 0xFF93938B;
             overlay(g, x + 3, y + 1, 1, 3, color); overlay(g, x + 1, y + 3, 5, 1, color); overlay(g, x + 2, y + 4, 3, 1, color);
         }
+        if (!cell.template().isEmpty() && cell.maximum() >= 0 && cell.amount() > cell.maximum() * cell.stackSize()) {
+            int color = 0xFFE0955A;
+            overlay(g, x + 1, y + 1, 5, 1, color); overlay(g, x + 2, y + 2, 3, 1, color); overlay(g, x + 3, y + 3, 1, 3, color);
+        }
         if (hover && !cell.template().isEmpty()) overlay(g, box.dot().x(), box.dot().y() + 1, 4, 4, 0xFFE0C27E);
         if (hover) {
             tooltip = new ArrayList<>();

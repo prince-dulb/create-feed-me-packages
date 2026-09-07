@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import dev.scathiard.feedmepackages.registry.FmpRegistries;
 import dev.scathiard.feedmepackages.interaction.CacheActions;
 import dev.scathiard.feedmepackages.logistics.SupplyService;
+import dev.scathiard.feedmepackages.logistics.ReturnService;
 import dev.scathiard.feedmepackages.network.PanelNetwork;
 import dev.scathiard.feedmepackages.network.MaterialHints;
 import dev.scathiard.feedmepackages.consumption.CraftingReservations;
@@ -66,6 +67,7 @@ public final class FeedMePackages {
             CraftingReservations.validate(player);
             CacheActions.validateOpenContext(player);
             SupplyService.tick(player);
+            ReturnService.tick(player);
             MaterialHints.tick(player);
         }
     }
