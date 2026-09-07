@@ -26,6 +26,7 @@
   "gui.create_feed_me_packages.expand": "Open supply cache; closes the recipe book if space is limited",
   "gui.create_feed_me_packages.empty": "Empty cell: deposit an item to set a filter",
   "gui.create_feed_me_packages.stock": "In cache: %s / %s",
+  "gui.create_feed_me_packages.stock_groups": "In cache groups: %s / %s",
   "gui.create_feed_me_packages.slot_help": "Left: stack; right: one; Shift: to inventory",
   "gui.create_feed_me_packages.pending": "%s items pending",
   "gui.create_feed_me_packages.requested": "Below minimum; request sent",

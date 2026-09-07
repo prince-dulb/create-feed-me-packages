@@ -305,25 +305,23 @@ public final class LogisticsPanel {
     private static void renderReturnBar(GuiGraphics g) {
         var r = layout.returnBar();
         int x = r.x(), y = r.y(), w = r.width(), h = r.height();
-        // Dark bracket behind the field (matches the panel frame), then a white input box like the
-        // dedicated delivery-address field. No send button: returns are automatic.
+        // The narrow panel cannot afford a separate label column, so the whole bar is one white input
+        // field and the label doubles as the placeholder (matches the reference address field).
         g.fill(x - 1, y - 1, x + w + 1, y + h + 1, 0xFF262B26);
         g.fill(x, y, x + w, y + h, 0xFF3A3E38);
-        String label = tr("return_label").getString();
-        int labelW = MC.font.width(label) + 12;
-        int boxX = x + labelW, boxW = w - labelW - 4;
-        g.fill(boxX, y + 3, boxX + boxW, y + h - 3, 0xFFEFE9D8);
-        g.fill(boxX, y + 3, boxX + boxW, y + 4, 0xFFD8D0BC);
-        g.fill(boxX, y + h - 4, boxX + boxW, y + h - 3, 0xFFD8D0BC);
-        g.fill(boxX + boxW - 1, y + 3, boxX + boxW, y + h - 3, 0xFFD8D0BC);
+        g.fill(x + 2, y + 2, x + w - 2, y + h - 2, 0xFFEFE9D8);
+        g.fill(x + 2, y + 2, x + w - 2, y + 3, 0xFFD8D0BC);
+        g.fill(x + 2, y + h - 3, x + w - 2, y + h - 2, 0xFFD8D0BC);
+        g.fill(x + w - 3, y + 2, x + w - 2, y + h - 2, 0xFFD8D0BC);
         String value = returnEditing ? returnBuffer : (snapshot.returnAddress() == null ? "" : snapshot.returnAddress());
-        int textWidth = boxW - 10;
-        String shown = MC.font.width(value) <= textWidth ? value : MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - MC.font.width("…"))) + "…";
-        text(g, label, x + 6, y + h / 2 - MC.font.lineHeight / 2, 0xFFB9B0A0);
-        text(g, shown, boxX + 5, y + h / 2 - MC.font.lineHeight / 2, returnEditing ? 0xFF4A3B28 : 0xFF5E523F);
+        int textWidth = w - 10;
+        boolean placeholder = value.isEmpty() && !returnEditing;
+        String shown = placeholder ? tr("return_label").getString()
+                : MC.font.width(value) <= textWidth ? value : MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - MC.font.width("…"))) + "…";
+        text(g, shown, x + 5, y + h / 2 - MC.font.lineHeight / 2, placeholder ? 0xFF8A7E68 : (returnEditing ? 0xFF4A3B28 : 0xFF5E523F));
         if (returnEditing) {
-            int caretX = boxX + 5 + MC.font.width(shown);
-            g.fill(caretX, y + 5, caretX + 1, y + h - 5, 0xFF4A3B28);
+            int caretX = x + 5 + MC.font.width(shown);
+            g.fill(caretX, y + 4, caretX + 1, y + h - 4, 0xFF4A3B28);
         }
         if (r.contains(mouseX, mouseY)) tooltip = List.of(tr(returnEditing ? "return_editing" : "return_hint"));
     }
@@ -353,13 +351,18 @@ public final class LogisticsPanel {
     private static boolean press(double x, double y, int button) {
         if (!visible()) return false;
         if (waiting != 0) { capturedButton = button; return true; }
-        if (number != null && (layout.slider() == null || !layout.slider().contains(x, y))) { commitNumber(); return true; }
         if (!layout.bounds().contains(x, y)) return false;
         // Clicking anywhere other than the return bar exits return-address editing, so typing never
         // leaks into the wrong field after the player changes focus.
         if (returnEditing && !(active() && layout.returnBar() != null && layout.returnBar().contains(x, y))) returnEditing = false;
         capturedButton = button;
         if (button != 0 && button != 1) return true;
+        // A return-bar click always starts editing and never gets swallowed by an open numeric EditBox.
+        if (active() && layout.returnBar() != null && layout.returnBar().contains(x, y)) {
+            if (number != null) commitNumber();
+            returnEditing = true; returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress(); return true;
+        }
+        if (number != null && (layout.slider() == null || !layout.slider().contains(x, y))) { commitNumber(); return true; }
         if (layout.compact()) {
             if (bookOpen()) { ((RecipeUpdateListener)screen).getRecipeBookComponent().toggleVisibility(); screen.init(MC, screen.width, screen.height); }
             updateLayout(); return true;
@@ -370,9 +373,6 @@ public final class LogisticsPanel {
         if (x >= px + layout.bounds().width() - 4 && y >= py + PanelLayout.HEADER && y < fy) {
             firstRow = (int)((y - py - PanelLayout.HEADER) * Math.max(0, layout.totalRows() - layout.visibleRows()) / Math.max(1, fy - py - PanelLayout.HEADER));
             selected = -1; updateLayout(); return true;
-        }
-        if (active() && layout.returnBar() != null && layout.returnBar().contains(x, y)) {
-            returnEditing = true; returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress(); return true;
         }
         if (!active()) return true;
         var slider = layout.slider();
