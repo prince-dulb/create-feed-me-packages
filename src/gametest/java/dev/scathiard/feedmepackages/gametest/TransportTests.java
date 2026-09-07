@@ -287,7 +287,7 @@ public final class TransportTests {
                         FeedMePackages.LOGGER.info("FMP_NETWORK_FLIGHT_PASSED mobile source=64 cache=64 backpack=full");
                     })
                     .thenExecute(() -> {
-                        var before = f.record(); var edit = before.state().edit(); edit.insert(0, f.key(), 8120);
+                        var before = f.record(); var edit = before.state().edit(); edit.insert(0, f.key(), ReceiveTests.FULL);
                         f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish())); enqueue.accept(f.box(32));
                     })
                     .thenWaitUntil(observeFlight)
@@ -302,10 +302,10 @@ public final class TransportTests {
                             helper.assertTrue(PackageItem.isPackage(box) && PackageItem.getContents(box).getStackInSlot(0).getCount() == 16,
                                     "Refused native bee lost original cargo");
                             helper.assertTrue(f.record().state().cells().getFirst().amount() == ReceiveTests.FULL, "Refused native delivery changed cache");
-                            f.extract(136); dev.scathiard.feedmepackages.logistics.ReceiveService.resume(f.player());
+                            f.extract(ReceiveTests.FULL); dev.scathiard.feedmepackages.logistics.ReceiveService.resume(f.player());
                         } catch (ReflectiveOperationException failure) { throw new IllegalStateException(failure); }
                     })
-                    .thenWaitUntil(() -> helper.assertTrue(f.record().state().cells().getFirst().amount() == 8096 && f.residual().isEmpty(), "Native retry after space was freed was not conservative"))
+                    .thenWaitUntil(() -> helper.assertTrue(f.record().state().cells().getFirst().amount() == 32 + 16 && f.residual().isEmpty(), "Native retry after space was freed was not conservative"))
                     .thenWaitUntil(recovered)
                     .thenSucceed();
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Mobile native flight experiment failed", failure); }

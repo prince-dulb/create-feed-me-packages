@@ -38,6 +38,7 @@
   "gui.create_feed_me_packages.return_hint": "默认退货地址；纸飞机/运输蜂发运目标",
   "gui.create_feed_me_packages.return_editing": "输入后回车保存，Esc 取消",
   "gui.create_feed_me_packages.minimum_help": "最低数量；-1 关闭",
+  "gui.create_feed_me_packages.maximum_help": "最高数量；超过则退货，-1 关闭",
   "gui.create_feed_me_packages.reset": "重置本格请求（%s 件）",
   "gui.create_feed_me_packages.residual": "余货待解包",
   "gui.create_feed_me_packages.timeout": "未收到确认，已刷新",

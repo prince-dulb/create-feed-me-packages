@@ -41,10 +41,12 @@ public final class LogisticsPanel {
     private static int tick, lastQuery, sequence, waiting, waitingSince, firstRow, selected = -1, draftMinimum;
     private static long serial = -1;
     private static boolean draggingSlider;
+    private static boolean draggingMaximum;
     private static int capturedButton = -1;
     private static EditBox number;
     private static boolean returnEditing;
     private static String returnBuffer = "";
+    private static int draftMaximum = -1;
     private static Component feedback;
     private static int feedbackUntil;
     private static List<Component> tooltip = List.of();
@@ -79,7 +81,8 @@ public final class LogisticsPanel {
         bus.addListener((ScreenEvent.MouseDragged.Pre event) -> {
             if (!current(event.getScreen()) || !visible()) return;
             if (draggingSlider) setDraft(event.getMouseX());
-            if (waiting != 0 || draggingSlider || capturedButton >= 0 || layout.bounds().contains(event.getMouseX(), event.getMouseY())) event.setCanceled(true);
+            if (draggingMaximum) setDraftMaximum(event.getMouseX());
+            if (waiting != 0 || draggingSlider || draggingMaximum || capturedButton >= 0 || layout.bounds().contains(event.getMouseX(), event.getMouseY())) event.setCanceled(true);
         });
         bus.addListener((ScreenEvent.MouseScrolled.Pre event) -> {
             if (current(event.getScreen()) && scroll(event.getMouseX(), event.getMouseY(), event.getScrollDeltaY())) event.setCanceled(true);
@@ -128,7 +131,7 @@ public final class LogisticsPanel {
         if (window != null && MC.getConnection() != null && MC.player != null)
             PacketDistributor.sendToServer(new PanelPackets.Query(window, MC.player.containerMenu.containerId, false));
         screen = null; window = null; snapshot = null; layout = null; waiting = 0; serial = -1;
-        selected = -1; firstRow = 0; draggingSlider = false; capturedButton = -1; number = null; returnEditing = false; returnBuffer = "";
+        selected = -1; firstRow = 0; draggingSlider = false; draggingMaximum = false; capturedButton = -1; number = null; returnEditing = false; returnBuffer = ""; draftMaximum = -1;
         tooltip = List.of(); ICONS.clear(); feedback = null;
     }
     private static void receive(PanelPackets.Snapshot incoming) {
@@ -259,43 +262,69 @@ public final class LogisticsPanel {
             if (box.dot().contains(mouseX, mouseY) && !cell.template().isEmpty()) tooltip = List.of(tr("configure"));
         }
     }
+    private static int thumbPx(int sliderX, int width, int value, int groupCap) {
+        return sliderX + 3 + (value < 0 ? 0 : Math.max(1, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
+    }
     private static void renderSlider(GuiGraphics g) {
-        var r = layout.slider(); var cell = snapshot.cells().get(selected); int value = draggingSlider ? draftMinimum : cell.minimum();
+        var r = layout.slider(); var cell = snapshot.cells().get(selected);
         int groupCap = snapshot.groupCapacity();
-        int x = r.x(), y = r.y();
+        int x = r.x(), y = r.y(), w = r.width();
+        int min = draggingSlider ? draftMinimum : cell.minimum();
+        int max = draggingMaximum ? draftMaximum : cell.maximum();
         // Overlay layer: the slider floats above the cells it covers (z lifts past item icons at ~200).
         g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        g.fill(x - 1, y - 1, x + r.width() + 1, y + 23, 0xFF262B26);
-        g.fill(x, y, x + r.width(), y + 22, 0xFF393C36);
-        g.fill(x + 3, y + 4, x + r.width() - 3, y + 6, 0xFF242723);
-        int at = x + 3 + (value < 0 ? 0 : Math.max(1, value * (r.width() - 10) / Math.max(1, groupCap)));
-        g.fill(x + 3, y + 4, at + 1, y + 6, 0xFFB4A36B);
-        overlay(g, at - 1, y + 1, 3, 8, value < 0 ? 0xFF828378 : 0xFFE5C57D);
-        overlay(g, x + r.width() - 4, y + 1, 3, 8, 0xFF696C65);
+        g.fill(x - 1, y - 1, x + w + 1, y + 23, 0xFF262B26);
+        g.fill(x, y, x + w, y + 22, 0xFF393C36);
+        g.fill(x + 3, y + 4, x + w - 3, y + 6, 0xFF242723);
+        int minAt = thumbPx(x, w, min, groupCap);
+        int maxAt = max < 0 ? x + w - 3 : thumbPx(x, w, max, groupCap);
+        // acceptable stock band between the supply minimum and the return maximum
+        g.fill(Math.min(minAt, maxAt), y + 4, Math.max(minAt, maxAt) + 1, y + 6, 0xFFB4A36B);
+        overlay(g, minAt - 1, y + 1, 3, 8, min < 0 ? 0xFF828378 : 0xFFE5C57D);
+        overlay(g, maxAt - 1, y + 1, 3, 8, max < 0 ? 0xFF696C65 : 0xFFE0955A);
         if (number == null) {
-            String label = value < 0 ? "-" : String.valueOf(value * cell.stackSize()); float scale = Math.min(1f, (r.width() - 15f) / MC.font.width(label));
-            g.pose().pushPose(); g.pose().translate(x + 2, y + 12, 190); g.pose().scale(scale, scale, 1);
-            g.drawString(MC.font, label, 0, 0, 0xFFE5D8B6, false); g.pose().popPose();
+            String minLabel = min < 0 ? "-" : String.valueOf(min * cell.stackSize());
+            float s1 = Math.min(1f, 20f / MC.font.width(minLabel));
+            g.pose().pushPose(); g.pose().translate(minAt - MC.font.width(minLabel) * s1 / 2, y + 12, 190); g.pose().scale(s1, s1, 1);
+            g.drawString(MC.font, minLabel, 0, 0, 0xFFE5D8B6, false); g.pose().popPose();
+            if (max >= 0) {
+                String maxLabel = String.valueOf(max * cell.stackSize());
+                float s2 = Math.min(1f, 20f / MC.font.width(maxLabel));
+                g.pose().pushPose(); g.pose().translate(maxAt - MC.font.width(maxLabel) * s2 / 2, y + 13, 190); g.pose().scale(s2, s2, 1);
+                g.drawString(MC.font, maxLabel, 0, 0, 0xFFE0955A, false); g.pose().popPose();
+            }
         }
         else { number.setX(x + 2); number.setY(y + 11); number.render(g, mouseX, mouseY, 0); }
-        text(g, "↶", x + r.width() - 10, y + 12, 0xFFB9C4B0);
-        if (r.contains(mouseX, mouseY)) tooltip = List.of(tr(mouseX >= x + r.width() - 6 && mouseY < y + 10 ? "returns_later" : "minimum_help"));
-        if (new PanelLayout.Rect(x + r.width() - 11, y + 10, 11, 12).contains(mouseX, mouseY)) tooltip = List.of(tr("reset", cell.pending()));
+        text(g, "↶", x + w - 10, y + 12, 0xFFB9C4B0);
+        if (r.contains(mouseX, mouseY)) {
+            if (mouseY < y + 10) tooltip = List.of(tr(mouseX <= minAt ? "minimum_help" : (max < 0 ? "returns_later" : "maximum_help")));
+            if (new PanelLayout.Rect(x + w - 11, y + 10, 11, 12).contains(mouseX, mouseY)) tooltip = List.of(tr("reset", cell.pending()));
+        }
         g.pose().popPose();
     }
     private static void renderReturnBar(GuiGraphics g) {
         var r = layout.returnBar();
         int x = r.x(), y = r.y(), w = r.width(), h = r.height();
-        // A single per-cache return-address field below the grid (no send button; returns are automatic).
+        // Dark bracket behind the field (matches the panel frame), then a white input box like the
+        // dedicated delivery-address field. No send button: returns are automatic.
         g.fill(x - 1, y - 1, x + w + 1, y + h + 1, 0xFF262B26);
-        g.fill(x, y, x + w, y + h, 0xFF393C36);
-        g.fill(x + 3, y + 3, x + w - 3, y + h - 3, 0xFF3F4038);
-        String value = returnEditing ? returnBuffer : (snapshot.returnAddress() == null ? "" : snapshot.returnAddress());
+        g.fill(x, y, x + w, y + h, 0xFF3A3E38);
         String label = tr("return_label").getString();
-        int textWidth = w - MC.font.width(label) - 16;
+        int labelW = MC.font.width(label) + 12;
+        int boxX = x + labelW, boxW = w - labelW - 4;
+        g.fill(boxX, y + 3, boxX + boxW, y + h - 3, 0xFFEFE9D8);
+        g.fill(boxX, y + 3, boxX + boxW, y + 4, 0xFFD8D0BC);
+        g.fill(boxX, y + h - 4, boxX + boxW, y + h - 3, 0xFFD8D0BC);
+        g.fill(boxX + boxW - 1, y + 3, boxX + boxW, y + h - 3, 0xFFD8D0BC);
+        String value = returnEditing ? returnBuffer : (snapshot.returnAddress() == null ? "" : snapshot.returnAddress());
+        int textWidth = boxW - 10;
         String shown = MC.font.width(value) <= textWidth ? value : MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - MC.font.width("…"))) + "…";
-        text(g, label, x + 5, y + h / 2 - MC.font.lineHeight / 2, 0xFFB9B0A0);
-        text(g, shown, x + 6 + MC.font.width(label), y + h / 2 - MC.font.lineHeight / 2, returnEditing ? 0xFFF5EEDD : 0xFFCFC7B2);
+        text(g, label, x + 6, y + h / 2 - MC.font.lineHeight / 2, 0xFFB9B0A0);
+        text(g, shown, boxX + 5, y + h / 2 - MC.font.lineHeight / 2, returnEditing ? 0xFF4A3B28 : 0xFF5E523F);
+        if (returnEditing) {
+            int caretX = boxX + 5 + MC.font.width(shown);
+            g.fill(caretX, y + 5, caretX + 1, y + h - 5, 0xFF4A3B28);
+        }
         if (r.contains(mouseX, mouseY)) tooltip = List.of(tr(returnEditing ? "return_editing" : "return_hint"));
     }
 
@@ -326,6 +355,9 @@ public final class LogisticsPanel {
         if (waiting != 0) { capturedButton = button; return true; }
         if (number != null && (layout.slider() == null || !layout.slider().contains(x, y))) { commitNumber(); return true; }
         if (!layout.bounds().contains(x, y)) return false;
+        // Clicking anywhere other than the return bar exits return-address editing, so typing never
+        // leaks into the wrong field after the player changes focus.
+        if (returnEditing && !(active() && layout.returnBar() != null && layout.returnBar().contains(x, y))) returnEditing = false;
         capturedButton = button;
         if (button != 0 && button != 1) return true;
         if (layout.compact()) {
@@ -345,9 +377,17 @@ public final class LogisticsPanel {
         if (!active()) return true;
         var slider = layout.slider();
         if (slider != null && slider.contains(x, y)) {
-            if (y < slider.y() + 10) { if (x < slider.x() + slider.width() - 6) { draggingSlider = true; setDraft(x); } }
-            else if (x >= slider.x() + slider.width() - 11) send(Action.RESET_REQUEST, selected, 0, -1, "");
-            else {
+            if (y < slider.y() + 10) {
+                int groupCap = snapshot.groupCapacity();
+                var cell = snapshot.cells().get(selected);
+                int minAt = thumbPx(slider.x(), slider.width(), cell.minimum(), groupCap);
+                int maxAt = cell.maximum() < 0 ? slider.x() + slider.width() - 3 : thumbPx(slider.x(), slider.width(), cell.maximum(), groupCap);
+                // Drag whichever thumb the player grabbed (left = supply minimum, right = return maximum).
+                if (Math.abs(x - maxAt) < Math.abs(x - minAt)) { draggingMaximum = true; setDraftMaximum(x); }
+                else { draggingSlider = true; setDraft(x); }
+            } else if (x >= slider.x() + slider.width() - 11) {
+                send(Action.RESET_REQUEST, selected, 0, -1, "");
+            } else {
                 number = new EditBox(MC.font, slider.x() + 2, slider.y() + 11, slider.width() - 15, 10, tr("minimum_help"));
                 number.setBordered(false); number.setMaxLength(5); number.setFilter(value -> value.matches("-?[0-9]*"));
                 number.setValue(Integer.toString(snapshot.cells().get(selected).minimum())); number.setFocused(true);
@@ -374,6 +414,9 @@ public final class LogisticsPanel {
         if (waiting != 0) { if (capturedButton == button) capturedButton = -1; return true; }
         if (draggingSlider) {
             setDraft(x); draggingSlider = false; sendMinimum(draftMinimum); capturedButton = -1; return true;
+        }
+        if (draggingMaximum) {
+            setDraftMaximum(x); draggingMaximum = false; sendMaximum(draftMaximum); capturedButton = -1; return true;
         }
         if (capturedButton == button) { capturedButton = -1; return true; }
         if (layout.bounds().contains(x, y)) {
@@ -421,7 +464,22 @@ public final class LogisticsPanel {
         if (layout.slider() == null) return;
         int groupCap = snapshot.groupCapacity();
         double relative = x - layout.slider().x() - 3;
-        draftMinimum = relative <= 0 ? -1 : Math.clamp((int)Math.round(relative * groupCap / (layout.slider().width() - 10)), 0, groupCap);
+        int min = relative <= 0 ? -1 : Math.clamp((int)Math.round(relative * groupCap / (layout.slider().width() - 10)), 0, groupCap);
+        int cap = snapshot.cells().get(selected).maximum();
+        if (draggingMaximum) cap = draftMaximum;
+        draftMinimum = min < 0 ? -1 : Math.min(min, cap < 0 ? groupCap : cap);
+    }
+    private static void setDraftMaximum(double x) {
+        if (layout.slider() == null) return;
+        int groupCap = snapshot.groupCapacity();
+        double relative = x - layout.slider().x() - 3;
+        int max = relative <= 1 ? -1 : Math.clamp((int)Math.round(relative * groupCap / (layout.slider().width() - 10)), 0, groupCap);
+        int lower = snapshot.cells().get(selected).minimum();
+        if (draggingSlider) lower = draftMinimum;
+        draftMaximum = max < 0 ? -1 : Math.max(max, Math.max(0, lower));
+    }
+    private static void sendMaximum(int maximum) {
+        if (selected >= 0 && active()) send(Action.THRESHOLDS, selected, snapshot.cells().get(selected).minimum(), maximum, "");
     }
     private static void sendMinimum(int minimum) {
         if (selected >= 0 && active()) send(Action.THRESHOLDS, selected, minimum, snapshot.cells().get(selected).maximum(), "");

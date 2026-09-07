@@ -38,6 +38,7 @@
   "gui.create_feed_me_packages.return_hint": "Default return address; paper-plane / bee dispatch target",
   "gui.create_feed_me_packages.return_editing": "Type then Enter to save; Esc to cancel",
   "gui.create_feed_me_packages.minimum_help": "Minimum; -1 disables",
+  "gui.create_feed_me_packages.maximum_help": "Maximum; over it returns stock, -1 disables",
   "gui.create_feed_me_packages.reset": "Reset this cell's requests (%s items)",
   "gui.create_feed_me_packages.inventory_first": "Inventory first",
   "gui.create_feed_me_packages.cache_first": "Cache first",
