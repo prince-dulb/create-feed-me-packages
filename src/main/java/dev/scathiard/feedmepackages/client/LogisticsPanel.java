@@ -527,8 +527,8 @@ public final class LogisticsPanel {
         LogisticsPanel.panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
         // Left endpoint = small triangle below the track; right endpoint = triangle above the track,
         // so both stay draggable even when they are at the same position.
-        LogisticsPanel.panelBlit(g, minAt - 2, y + 13, 5, 5, 0, 15, 5, 5);
-        LogisticsPanel.panelBlit(g, maxAt - 2, y + 2, 5, 5, 7, 11, 5, 5);
+        LogisticsPanel.panelBlit(g, minAt - 2, y + 11, 5, 5, 0, 15, 5, 5);
+        LogisticsPanel.panelBlit(g, maxAt - 3, y + 3, 5, 5, 7, 11, 5, 5);
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(8.0f / 9.0f, (w - 8) / 2.0f / (float)LogisticsPanel.MC.font.width(minLabel));
         g.pose().pushPose();
