@@ -509,14 +509,18 @@ public final class LogisticsPanel {
     }
 
     private static void renderSlot(GuiGraphics g, int x, int y) {
-        // A clean 18x18 slot in the supplied reference area; contains no text or item.
-        panelBlit(g, x, y, 18, 18, 101, 65, 18, 18);
+        // This user-authored slot has its own stable source; panel.png may be reorganized independently.
+        com.mojang.blaze3d.systems.RenderSystem.enableBlend();
+        com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
+        g.blit(ResourceLocation.fromNamespaceAndPath("create_feed_me_packages", "textures/gui/slot_source.png"),
+                x, y, 101.0f, 65.0f, 18, 18, 256, 256);
+        com.mojang.blaze3d.systems.RenderSystem.disableBlend();
     }
 
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
         // Zero sits on the track's left edge (x+3), never pushed +1 past it. Non-zero uses the full
         // mapped span. Both rendering and the hit test read this same function, so they stay aligned.
-        return sliderX + 3 + (value < 0 ? 0 : Math.max(0, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
+        return sliderX + PanelLayout.TRACK_INSET + (value < 0 ? 0 : Math.max(0, Math.min(groupCap, value) * (width - 2 * PanelLayout.TRACK_INSET) / Math.max(1, groupCap)));
     }
 
     private static void panelBlit(GuiGraphics g, int sx, int sy, int sw, int sh, int u, int v, int w, int h) {
@@ -553,9 +557,9 @@ public final class LogisticsPanel {
         int maxAt = LogisticsPanel.thumbPx(x, w, maxN, groupCap);
         g.pose().pushPose();
         g.pose().translate(0.0f, 0.0f, 250.0f);
-        int tx = x + 3;
-        int ty = y + 7;
-        int trackW = w - 10;
+        int tx = x + PanelLayout.TRACK_INSET;
+        int ty = y + PanelLayout.TRACK_Y;
+        int trackW = w - 2 * PanelLayout.TRACK_INSET;
         LogisticsPanel.panelBlit(g, tx, ty, 4, 5, 0, 1, 4, 5);
         int midX = tx + 4;
         int midEnd = tx + trackW - 4;
@@ -569,23 +573,23 @@ public final class LogisticsPanel {
         LogisticsPanel.panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
         // Left endpoint = small triangle below the track; right endpoint = triangle above the track,
         // so both stay draggable even when they are at the same position.
-        LogisticsPanel.panelBlit(g, minAt - 2, y + 11, 5, 5, 0, 15, 5, 5);
-        LogisticsPanel.panelBlit(g, maxAt - 3, y + 3, 5, 5, 7, 11, 5, 5);
+        LogisticsPanel.panelBlit(g, minAt - 2, y + PanelLayout.MIN_THUMB_Y, 5, 5, 0, 15, 5, 5);
+        LogisticsPanel.panelBlit(g, maxAt - 3, y + PanelLayout.MAX_THUMB_Y, 5, 5, 7, 11, 5, 5);
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(8.0f / 9.0f, (w - 8) / 2.0f / (float)LogisticsPanel.MC.font.width(minLabel));
         g.pose().pushPose();
-        g.pose().translate((float)(x + 3), (float)(y + 14), 190.0f);
+        g.pose().translate((float)(x + 3), (float)(y + PanelLayout.LABEL_Y), 190.0f);
         g.pose().scale(s1, s1, 1.0f);
         g.drawString(LogisticsPanel.MC.font, minLabel, 0, 0, -1713994, false);
         g.pose().popPose();
         String maxLabel = String.valueOf(maxN * cell.stackSize());
         float s2 = Math.min(8.0f / 9.0f, (w - 8) / 2.0f / (float)LogisticsPanel.MC.font.width(maxLabel));
         g.pose().pushPose();
-        g.pose().translate((float)(x + w - 3) - (float)LogisticsPanel.MC.font.width(maxLabel) * s2, (float)(y + 14), 190.0f);
+        g.pose().translate((float)(x + w - 3) - (float)LogisticsPanel.MC.font.width(maxLabel) * s2, (float)(y + PanelLayout.LABEL_Y), 190.0f);
         g.pose().scale(s2, s2, 1.0f);
         g.drawString(LogisticsPanel.MC.font, maxLabel, 0, 0, -2058918, false);
         g.pose().popPose();
-        if (r.contains(mouseX, mouseY) && mouseY < y + 10) {
+        if (r.contains(mouseX, mouseY) && mouseY < y + PanelLayout.TRACK_Y + 3) {
             tooltip = List.of(LogisticsPanel.tr(mouseX <= minAt ? "minimum_help" : "maximum_help", new Object[0]));
         }
         g.pose().popPose();
@@ -718,10 +722,10 @@ public final class LogisticsPanel {
             int minAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.minimum() < 0 ? 0 : cell.minimum(), groupCap);
             int maxAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.maximum() < 0 ? groupCap : cell.maximum(), groupCap);
             // Hitboxes hug the triangles: upper band = right endpoint, lower band = left endpoint.
-            if (y >= slider.y() + 9 && y <= slider.y() + 18 && Math.abs(x - minAt) <= 3) {
+            if (y >= slider.y() + PanelLayout.MIN_THUMB_Y && y < slider.y() + PanelLayout.MIN_THUMB_Y + 5 && Math.abs(x - minAt) <= 3) {
                 draggingSlider = true;
                 LogisticsPanel.setDraft(x);
-            } else if (y >= slider.y() + 1 && y <= slider.y() + 10 && Math.abs(x - maxAt) <= 3) {
+            } else if (y >= slider.y() + PanelLayout.MAX_THUMB_Y && y < slider.y() + PanelLayout.MAX_THUMB_Y + 5 && Math.abs(x - maxAt) <= 3) {
                 draggingMaximum = true;
                 LogisticsPanel.setDraftMaximum(x);
             } else {
@@ -837,7 +841,7 @@ public final class LogisticsPanel {
             return;
         }
         int groupCap = snapshot.groupCapacity();
-        double relative = x - (double)layout.slider().x() - 3.0;
+        double relative = x - (double)layout.slider().x() - PanelLayout.TRACK_INSET;
         int min = Math.clamp((long)((int)Math.round(relative * (double)groupCap / (double)(layout.slider().width() - 10))), (int)0, (int)groupCap);
         int cap = snapshot.cells().get(selected).maximum();
         if (cap < 0) {
@@ -854,7 +858,7 @@ public final class LogisticsPanel {
             return;
         }
         int groupCap = snapshot.groupCapacity();
-        double relative = x - (double)layout.slider().x() - 3.0;
+        double relative = x - (double)layout.slider().x() - PanelLayout.TRACK_INSET;
         // "No return" only at the true far right, beyond the full-capacity position (width-10).
         if (relative >= (double)(layout.slider().width() - 9)) {
             draftMaximum = -1;

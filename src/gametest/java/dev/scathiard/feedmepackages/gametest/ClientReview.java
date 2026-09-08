@@ -54,6 +54,10 @@ public final class ClientReview {
         try {
             if (work != null) { if (!work.isDone()) return; work.join(); work = null; }
             if (ticks - changed > 2400) throw new IllegalStateException("Client review timed out in phase " + phase);
+            if (Boolean.getBoolean("fmp.uiPlacementReview")) {
+                reviewUiPlacement();
+                return;
+            }
             switch (phase) {
                 case 0 -> {
                     if (mc.getOverlay() != null || mc.screen == null) return;
@@ -184,6 +188,108 @@ public final class ClientReview {
         } catch (Throwable problem) {
             if (!failed) { failed = true; phase = 99; FeedMePackages.LOGGER.error("FMP_CLIENT_REVIEW_FAILED", problem); capture("failure"); if (mc.level != null) mc.level.disconnect(); mc.disconnect(new TitleScreen()); mc.stop(); }
         }
+    }
+    private static int uiCase;
+    /** Narrow, opt-in visual check; never exercises or changes the production inventory transaction. */
+    private static void reviewUiPlacement() throws ReflectiveOperationException {
+        var mc = Minecraft.getInstance();
+        switch (phase) {
+            case 0 -> {
+                if (mc.getOverlay() != null || mc.screen == null) return;
+                mc.options.pauseOnLostFocus = false;
+                mc.getWindow().setWindowed(1280, 960);
+                mc.options.guiScale().set(2); mc.resizeDisplay();
+                mc.options.languageCode = "zh_cn"; mc.getLanguageManager().setSelected("zh_cn");
+                work = mc.reloadResourcePacks(); advance();
+            }
+            case 1 -> {
+                mc.createWorldOpenFlows().createFreshLevel("fmp-ui-placement-" + RUN,
+                        new LevelSettings("FMP UI placement " + RUN, GameType.SURVIVAL, false,
+                                Difficulty.PEACEFUL, true, new GameRules(), WorldDataConfiguration.DEFAULT),
+                        new WorldOptions(7319L, false, false), registry -> registry.registryOrThrow(Registries.WORLD_PRESET)
+                                .getHolderOrThrow(WorldPresets.FLAT).value().createWorldDimensions(), mc.screen);
+                advance();
+            }
+            case 2 -> {
+                if (mc.player == null || mc.screen != null || mc.getSingleplayerServer() == null || mc.player.tickCount < 20) return;
+                server(player -> {
+                    player.setGameMode(uiCase == 2 ? GameType.CREATIVE : GameType.SURVIVAL);
+                    player.getInventory().clearContent(); player.containerMenu.setCarried(ItemStack.EMPTY);
+                    CuriosApi.getCuriosInventory(player).orElseThrow().getStacksHandler("necklace").orElseThrow()
+                            .getStacks().setStackInSlot(0, FmpRegistries.PENDANT.toStack());
+                    var handle = AccessGate.resolve(player).handle();
+                    var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(handle.cacheId());
+                    var edit = before.state().edit();
+                    if (uiCase > 0) for (int i = 1; i < 5; i++) edit.upgrade();
+                    int count = uiCase == 0 ? 9 : 36;
+                    for (int i = 0; i < count; i++) {
+                        var key = ItemVariantKey.of(layoutItem(i), player.registryAccess());
+                        edit.filter(i, key); edit.insert(i, key, 64);
+                    }
+                    ledger.replace(handle, before.state().revision(), before.withState(edit.finish()));
+                    player.containerMenu.broadcastFullState();
+                }); advance();
+            }
+            case 3 -> {
+                mc.options.guiScale().set(uiCase == 3 ? 4 : uiCase == 2 ? 3 : 2); mc.resizeDisplay();
+                mc.setScreen(new InventoryScreen(mc.player)); advance();
+            }
+            case 4 -> {
+                if (ticks - changed < 30) return;
+                if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) {
+                    var layout = uiLayout();
+                    if (layout != null && layout.compact()) {
+                        click(layout.bounds().x() + 8, layout.bounds().y() + 8); changed = ticks;
+                    }
+                    return;
+                }
+                capture("placement-" + uiCase + "-closed");
+                var first = LogisticsPanel.visibleCells(mc.screen).getFirst().dot();
+                click(first.x() + 1, first.y() + 2); advance();
+            }
+            case 5 -> {
+                if (ticks - changed < 20) return;
+                require(uiLayout().slider() != null, "First-cell slider did not open");
+                capture("placement-" + uiCase + "-first");
+                var last = LogisticsPanel.visibleCells(mc.screen).getLast().dot();
+                click(last.x() + 1, last.y() + 2); advance();
+            }
+            case 6 -> {
+                if (ticks - changed < 20) return;
+                var layout = uiLayout(); var slider = layout.slider();
+                require(slider != null, "Last-cell slider did not open");
+                capture("placement-" + uiCase + "-last");
+                // Both endpoints must remain interactive where the popup covers the address.
+                click(slider.x() + 5, slider.y() + 12); advance();
+            }
+            case 7 -> {
+                if (ticks - changed < 20) return;
+                var editing = LogisticsPanel.class.getDeclaredField("returnEditing"); editing.setAccessible(true);
+                require(!editing.getBoolean(null), "Slider click leaked into return-address editor");
+                require(mc.player.containerMenu.getCarried().isEmpty(), "Slider click took an item from an underlying cell");
+                if (uiCase == 1 && mc.screen instanceof InventoryScreen inventory) {
+                    inventory.getRecipeBookComponent().toggleVisibility(); mc.screen.init(mc, mc.screen.width, mc.screen.height);
+                }
+                advance();
+            }
+            case 8 -> {
+                if (ticks - changed < 20) return;
+                capture("placement-" + uiCase + "-after-click"); advance();
+            }
+            case 9 -> {
+                if (ticks - changed < 10) return;
+                mc.setScreen(null);
+                if (++uiCase < 4) { phase = 2; changed = ticks; }
+                else { FeedMePackages.LOGGER.info("FMP_UI_PLACEMENT_REVIEW_PASSED {}", RUN);
+                    mc.level.disconnect(); mc.disconnect(new TitleScreen()); advance(); }
+            }
+            case 10 -> { if (mc.level == null && mc.getSingleplayerServer() == null) { mc.stop(); advance(); } }
+            default -> {}
+        }
+    }
+    private static PanelLayout uiLayout() throws ReflectiveOperationException {
+        var field = LogisticsPanel.class.getDeclaredField("layout"); field.setAccessible(true);
+        return (PanelLayout) field.get(null);
     }
     private static int creativeStage, creativeChanged;
     private static boolean reviewCreativePlacement() {

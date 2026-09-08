@@ -8,7 +8,9 @@ public record PanelLayout(Rect bounds, List<CellBox> cells, Rect slider, Rect re
         int firstRow, int visibleRows, int totalRows, int footerY, boolean compact) {
     // panel.png: two 22-pixel end caps surround the 18-pixel inventory cells.
     public static final int ROW = 18, SIDE = 22, WIDTH = 2 * ROW + 2 * SIDE;
-    public static final int HEADER = 18, BAR = 18, FOOTER = 24, SLIDER = 22;
+    public static final int HEADER = 18, BAR = 18, FOOTER = 24, SLIDER = 19;
+    // Geometry of the visible artwork, not only the surrounding popup rectangle.
+    public static final int TRACK_INSET = 5, TRACK_Y = 4, MIN_THUMB_Y = 8, MAX_THUMB_Y = 0, LABEL_Y = 11;
     public static final int MARGIN = 4, GAP = 4, BOOK_WIDTH = 177, MAX_ROWS = 6;
 
     public record Rect(int x, int y, int width, int height) {

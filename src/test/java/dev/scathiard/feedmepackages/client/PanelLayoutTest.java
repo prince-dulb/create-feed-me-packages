@@ -76,6 +76,32 @@ class PanelLayoutTest {
         var closed = PanelLayout.compute(240, 200, 40, 9, 0, -1, false);
         assertTrue(closed.returnAddressContains(x, y));
     }
+    @Test void visibleSliderArtworkIsCenteredAndStartsJustBelowTheCell() {
+        var layout = PanelLayout.compute(240, 200, 40, 9, 0, 8, false);
+        var cell = layout.cells().stream().filter(c -> c.slot() == 8).findFirst().orElseThrow().bounds();
+        var slider = layout.slider();
+        int trackWidth = slider.width() - 2 * PanelLayout.TRACK_INSET;
+        assertEquals(cell.x() * 2 + cell.width(),
+                (slider.x() + PanelLayout.TRACK_INSET) * 2 + trackWidth);
+        assertEquals(cell.y() + cell.height() + 2, slider.y() + PanelLayout.MAX_THUMB_Y);
+        assertEquals(cell.y() + cell.height() + 6, slider.y() + PanelLayout.TRACK_Y);
+        assertTrue(PanelLayout.MIN_THUMB_Y + 5 <= PanelLayout.SLIDER);
+        assertTrue(PanelLayout.LABEL_Y + 8 <= PanelLayout.SLIDER);
+    }
+    @Test void slotSourceRetainsTheCompleteOpaqueCellEvenWithoutPanelReferenceArea() throws Exception {
+        try (var source = getClass().getResourceAsStream("/assets/create_feed_me_packages/textures/gui/slot_source.png")) {
+            assertNotNull(source);
+            var image = javax.imageio.ImageIO.read(source);
+            assertNotNull(image);
+            Set<Integer> colors = new HashSet<>();
+            for (int y = 65; y < 83; y++) for (int x = 101; x < 119; x++) {
+                int rgba = image.getRGB(x, y);
+                assertEquals(255, (rgba >>> 24), "Slot became transparent at " + x + "," + y);
+                colors.add(rgba);
+            }
+            assertTrue(colors.size() > 1, "Slot border and interior were flattened");
+        }
+    }
     private static boolean intersects(PanelLayout.Rect a, PanelLayout.Rect b) {
         return a.x() < b.x() + b.width() && a.x() + a.width() > b.x() && a.y() < b.y() + b.height() && a.y() + a.height() > b.y();
     }
