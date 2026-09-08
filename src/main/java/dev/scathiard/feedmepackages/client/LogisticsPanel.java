@@ -1,500 +1,906 @@
 package dev.scathiard.feedmepackages.client;
 
+import com.mojang.blaze3d.vertex.PoseStack;
 import com.simibubi.create.foundation.gui.AllGuiTextures;
-import dev.scathiard.feedmepackages.FeedMePackages;
+import dev.scathiard.feedmepackages.client.PanelLayout;
+import dev.scathiard.feedmepackages.client.SupplyCreativeScreen;
+import dev.scathiard.feedmepackages.client.SupplyInventoryScreen;
 import dev.scathiard.feedmepackages.interaction.CacheActions;
-import dev.scathiard.feedmepackages.interaction.CacheActions.Action;
 import dev.scathiard.feedmepackages.item.ItemVariantKey;
 import dev.scathiard.feedmepackages.item.PendantItem;
 import dev.scathiard.feedmepackages.mixin.ContainerScreenAccess;
 import dev.scathiard.feedmepackages.network.PanelNetwork;
 import dev.scathiard.feedmepackages.network.PanelPackets;
 import dev.scathiard.feedmepackages.service.AccessGate;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.function.Predicate;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.gui.screens.inventory.*;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.CraftingScreen;
+import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.gui.screens.recipebook.RecipeUpdateListener;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
-import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.client.event.ContainerScreenEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.network.PacketDistributor;
-import org.lwjgl.glfw.GLFW;
 import top.theillusivec4.curios.api.CuriosApi;
-import java.util.*;
-import java.util.function.Predicate;
+import top.theillusivec4.curios.api.type.capability.ICuriosItemHandler;
 
-/** Inventory companion, not a second inventory menu. All writes wait for a server acknowledgement. */
+/** Recovered from test.42; pixel-atlas and layout corrections only. */
 public final class LogisticsPanel {
-    private LogisticsPanel() {}
     private static final Minecraft MC = Minecraft.getInstance();
     private static AbstractContainerScreen<?> screen;
     private static UUID window;
     private static PanelPackets.Snapshot snapshot;
     private static PanelLayout layout;
-    private static final Map<String, ItemStack> ICONS = new HashMap<>();
-    private static int tick, lastQuery, sequence, waiting, waitingSince, firstRow, selected = -1, draftMinimum;
-    private static long serial = -1;
+    private static final Map<String, ItemStack> ICONS;
+    private static int tick;
+    private static int lastQuery;
+    private static int sequence;
+    private static int waiting;
+    private static int waitingSince;
+    private static int firstRow;
+    private static int selected;
+    private static int draftMinimum;
+    private static long serial;
     private static boolean draggingSlider;
     private static boolean draggingMaximum;
-    private static int capturedButton = -1;
+    private static int capturedButton;
     private static boolean returnEditing;
-    private static String returnBuffer = "";
-    private static int draftMaximum = -1;
+    private static String returnBuffer;
+    private static int draftMaximum;
     private static Component feedback;
     private static int feedbackUntil;
-    private static List<Component> tooltip = List.of();
-    private static int mouseX, mouseY;
-    private static Predicate<Screen> recipeOverlay = candidate -> false;
+    private static List<Component> tooltip;
+    private static int mouseX;
+    private static int mouseY;
+    private static Predicate<Screen> recipeOverlay;
     private static boolean retainTransition;
     private static int overlayBottomInset;
-    public static void recipeOverlay(Predicate<Screen> predicate) { recipeOverlay = Objects.requireNonNull(predicate); }
-    public static void overlayBottomInset(int pixels) { overlayBottomInset = Math.clamp(pixels, 0, 64); }
+    private static final ResourceLocation PANEL;
+
+    private LogisticsPanel() {
+    }
+
+    public static void recipeOverlay(Predicate<Screen> predicate) {
+        recipeOverlay = Objects.requireNonNull(predicate);
+    }
+
+    public static void overlayBottomInset(int pixels) {
+        overlayBottomInset = Math.clamp((long)pixels, (int)0, (int)64);
+    }
 
     public static void register() {
         PanelNetwork.receiveOnClient(LogisticsPanel::receive);
-        var bus = NeoForge.EVENT_BUS;
+        IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener((ScreenEvent.Opening event) -> {
-            retainTransition = window != null && (event.getNewScreen() == screen || recipeOverlay.test(event.getNewScreen()));
-            if (MC.player == null || event.getNewScreen() == null) return;
-            var inventory = CuriosApi.getCuriosInventory(MC.player).orElse(null);
-            if (inventory == null || inventory.findCurios("necklace").stream().noneMatch(found -> !found.slotContext().cosmetic() && found.stack().getItem() instanceof PendantItem)) return;
-            if (event.getNewScreen().getClass() == InventoryScreen.class) event.setNewScreen(new SupplyInventoryScreen(MC.player));
-            else if (event.getNewScreen().getClass() == CreativeModeInventoryScreen.class) event.setNewScreen(new SupplyCreativeScreen(MC.player));
+            boolean bl = retainTransition = window != null && (event.getNewScreen() == screen || recipeOverlay.test(event.getNewScreen()));
+            if (LogisticsPanel.MC.player == null || event.getNewScreen() == null) {
+                return;
+            }
+            ICuriosItemHandler inventory = CuriosApi.getCuriosInventory((LivingEntity)LogisticsPanel.MC.player).orElse(null);
+            if (inventory == null || inventory.findCurios(new String[]{"necklace"}).stream().noneMatch(found -> !found.slotContext().cosmetic() && found.stack().getItem() instanceof PendantItem)) {
+                return;
+            }
+            if (event.getNewScreen().getClass() == InventoryScreen.class) {
+                event.setNewScreen((Screen)new SupplyInventoryScreen((Player)LogisticsPanel.MC.player));
+            } else if (event.getNewScreen().getClass() == CreativeModeInventoryScreen.class) {
+                event.setNewScreen((Screen)new SupplyCreativeScreen(LogisticsPanel.MC.player));
+            }
         });
-        bus.addListener((ClientTickEvent.Post event) -> tick());
-        bus.addListener((ScreenEvent.Render.Pre event) -> { if (current(event.getScreen())) updateLayout(); });
+        bus.addListener((net.neoforged.neoforge.client.event.ClientTickEvent.Post event) -> LogisticsPanel.tick());
+        bus.addListener((ScreenEvent.Render.Pre event) -> {
+            if (LogisticsPanel.current(event.getScreen())) {
+                LogisticsPanel.updateLayout();
+            }
+        });
         bus.addListener(LogisticsPanel::foreground);
         bus.addListener(LogisticsPanel::postRender);
         bus.addListener((ScreenEvent.MouseButtonPressed.Pre event) -> {
-            if (current(event.getScreen()) && press(event.getMouseX(), event.getMouseY(), event.getButton())) event.setCanceled(true);
-        });
-        bus.addListener((ScreenEvent.MouseButtonReleased.Pre event) -> {
-            if (current(event.getScreen()) && release(event.getMouseX(), event.getMouseY(), event.getButton())) event.setCanceled(true);
-        });
-        bus.addListener((ScreenEvent.MouseDragged.Pre event) -> {
-            if (!current(event.getScreen()) || !visible()) return;
-            if (draggingSlider) setDraft(event.getMouseX());
-            if (draggingMaximum) setDraftMaximum(event.getMouseX());
-            if (waiting != 0 || draggingSlider || draggingMaximum || capturedButton >= 0 || layout.bounds().contains(event.getMouseX(), event.getMouseY())) event.setCanceled(true);
-        });
-        bus.addListener((ScreenEvent.MouseScrolled.Pre event) -> {
-            if (current(event.getScreen()) && scroll(event.getMouseX(), event.getMouseY(), event.getScrollDeltaY())) event.setCanceled(true);
-        });
-        bus.addListener((ScreenEvent.KeyPressed.Pre event) -> {
-            if (!current(event.getScreen())) return;
-            if (returnEditing && editReturnKey(event.getKeyCode())) { event.setCanceled(true); return; }
-            if (key(event.getKeyCode(), event.getScanCode(), event.getModifiers())) event.setCanceled(true);
-        });
-        bus.addListener((ScreenEvent.CharacterTyped.Pre event) -> {
-            if (!current(event.getScreen())) return;
-            if (returnEditing) {
-                if (returnBuffer.length() < 128 && event.getCodePoint() >= 32 && event.getCodePoint() <= 0xFFFF) returnBuffer += new String(Character.toChars(event.getCodePoint()));
+            if (LogisticsPanel.current(event.getScreen()) && LogisticsPanel.press(event.getMouseX(), event.getMouseY(), event.getButton())) {
                 event.setCanceled(true);
             }
         });
-        bus.addListener((ScreenEvent.Closing event) -> { if (event.getScreen() == screen && !retainTransition) close(); });
+        bus.addListener((ScreenEvent.MouseButtonReleased.Pre event) -> {
+            if (LogisticsPanel.current(event.getScreen()) && LogisticsPanel.release(event.getMouseX(), event.getMouseY(), event.getButton())) {
+                event.setCanceled(true);
+            }
+        });
+        bus.addListener((ScreenEvent.MouseDragged.Pre event) -> {
+            if (!LogisticsPanel.current(event.getScreen()) || !LogisticsPanel.visible()) {
+                return;
+            }
+            if (draggingSlider) {
+                LogisticsPanel.setDraft(event.getMouseX());
+            }
+            if (draggingMaximum) {
+                LogisticsPanel.setDraftMaximum(event.getMouseX());
+            }
+            if (waiting != 0 || draggingSlider || draggingMaximum || capturedButton >= 0 || layout.bounds().contains(event.getMouseX(), event.getMouseY())) {
+                event.setCanceled(true);
+            }
+        });
+        bus.addListener((ScreenEvent.MouseScrolled.Pre event) -> {
+            if (LogisticsPanel.current(event.getScreen()) && LogisticsPanel.scroll(event.getMouseX(), event.getMouseY(), event.getScrollDeltaY())) {
+                event.setCanceled(true);
+            }
+        });
+        bus.addListener((ScreenEvent.KeyPressed.Pre event) -> {
+            if (!LogisticsPanel.current(event.getScreen())) {
+                return;
+            }
+            if (returnEditing && LogisticsPanel.editReturnKey(event.getKeyCode())) {
+                event.setCanceled(true);
+                return;
+            }
+            if (LogisticsPanel.key(event.getKeyCode(), event.getScanCode(), event.getModifiers())) {
+                event.setCanceled(true);
+            }
+        });
+        bus.addListener((ScreenEvent.CharacterTyped.Pre event) -> {
+            if (!LogisticsPanel.current(event.getScreen())) {
+                return;
+            }
+            if (returnEditing) {
+                if (returnBuffer.length() < 128 && event.getCodePoint() >= ' ' && event.getCodePoint() <= '\uffff') {
+                    returnBuffer = returnBuffer + new String(Character.toChars(event.getCodePoint()));
+                }
+                event.setCanceled(true);
+            }
+        });
+        bus.addListener((ScreenEvent.Closing event) -> {
+            if (event.getScreen() == screen && !retainTransition) {
+                LogisticsPanel.close();
+            }
+        });
     }
 
     private static boolean supported(Screen candidate) {
         return candidate instanceof InventoryScreen || candidate instanceof CreativeModeInventoryScreen || candidate instanceof CraftingScreen;
     }
-    private static boolean current(Screen candidate) { return candidate == screen && supported(candidate) && window != null; }
-    private static boolean visible() { return snapshot != null && snapshot.status() != AccessGate.Status.NOT_WORN && layout != null; }
-    private static boolean active() { return snapshot != null && snapshot.status() == AccessGate.Status.ACTIVE && snapshot.session() != null; }
-    private static boolean bookOpen() {
-        return screen instanceof RecipeUpdateListener listener && listener.getRecipeBookComponent().isVisible();
+
+    private static boolean current(Screen candidate) {
+        return candidate == screen && LogisticsPanel.supported(candidate) && window != null;
     }
+
+    private static boolean visible() {
+        return snapshot != null && snapshot.status() != AccessGate.Status.NOT_WORN && layout != null;
+    }
+
+    private static boolean active() {
+        return snapshot != null && snapshot.status() == AccessGate.Status.ACTIVE && snapshot.session() != null;
+    }
+
+    private static boolean bookOpen() {
+        RecipeUpdateListener listener;
+        AbstractContainerScreen<?> abstractContainerScreen = screen;
+        return abstractContainerScreen instanceof RecipeUpdateListener && (listener = (RecipeUpdateListener)abstractContainerScreen).getRecipeBookComponent().isVisible();
+    }
+
     private static void tick() {
-        tick++;
-        boolean overlay = recipeOverlay.test(MC.screen) && window != null;
-        if (MC.player == null || MC.getConnection() == null || (!supported(MC.screen) && !overlay)) { if (window != null) close(); return; }
-        if (!overlay && screen != MC.screen) mount((AbstractContainerScreen<?>) MC.screen);
-        if (waiting != 0 && tick - waitingSince > 60) { waiting = 0; notice("timeout"); }
+        boolean overlay;
+        ++tick;
+        boolean bl = overlay = recipeOverlay.test(LogisticsPanel.MC.screen) && window != null;
+        if (LogisticsPanel.MC.player == null || MC.getConnection() == null || !LogisticsPanel.supported(LogisticsPanel.MC.screen) && !overlay) {
+            if (window != null) {
+                LogisticsPanel.close();
+            }
+            return;
+        }
+        if (!overlay && screen != LogisticsPanel.MC.screen) {
+            LogisticsPanel.mount((AbstractContainerScreen)LogisticsPanel.MC.screen);
+        }
+        if (waiting != 0 && tick - waitingSince > 60) {
+            waiting = 0;
+            LogisticsPanel.notice("timeout");
+        }
         if (tick - lastQuery >= 10) {
-            lastQuery = tick; PacketDistributor.sendToServer(new PanelPackets.Query(window, MC.player.containerMenu.containerId, true));
+            lastQuery = tick;
+            PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, true), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
     }
+
     public static void mount(AbstractContainerScreen<?> value) {
-        if (screen == value && window != null) return;
-        close(); screen = value; window = UUID.randomUUID(); lastQuery = tick - 10;
+        if (screen == value && window != null) {
+            return;
+        }
+        LogisticsPanel.close();
+        screen = value;
+        window = UUID.randomUUID();
+        lastQuery = tick - 10;
     }
-    public static void unmount(AbstractContainerScreen<?> value) { if (screen == value && !retainTransition) close(); }
+
+    public static void unmount(AbstractContainerScreen<?> value) {
+        if (screen == value && !retainTransition) {
+            LogisticsPanel.close();
+        }
+    }
+
     private static void close() {
-        if (window != null && MC.getConnection() != null && MC.player != null)
-            PacketDistributor.sendToServer(new PanelPackets.Query(window, MC.player.containerMenu.containerId, false));
-        screen = null; window = null; snapshot = null; layout = null; waiting = 0; serial = -1;
-        selected = -1; firstRow = 0; draggingSlider = false; draggingMaximum = false; capturedButton = -1; returnEditing = false; returnBuffer = ""; draftMaximum = -1;
-        tooltip = List.of(); ICONS.clear(); feedback = null;
+        if (window != null && MC.getConnection() != null && LogisticsPanel.MC.player != null) {
+            PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, false), (CustomPacketPayload[])new CustomPacketPayload[0]);
+        }
+        screen = null;
+        window = null;
+        snapshot = null;
+        layout = null;
+        waiting = 0;
+        serial = -1L;
+        selected = -1;
+        firstRow = 0;
+        draggingSlider = false;
+        draggingMaximum = false;
+        capturedButton = -1;
+        returnEditing = false;
+        returnBuffer = "";
+        draftMaximum = -1;
+        tooltip = List.of();
+        ICONS.clear();
+        feedback = null;
     }
+
     private static void receive(PanelPackets.Snapshot incoming) {
-        if (window == null || (MC.screen != screen && !recipeOverlay.test(MC.screen)) || !window.equals(incoming.window()) || incoming.serial() <= serial) return;
+        if (window == null || LogisticsPanel.MC.screen != screen && !recipeOverlay.test(LogisticsPanel.MC.screen) || !window.equals(incoming.window()) || incoming.serial() <= serial) {
+            return;
+        }
         boolean wasVisible = snapshot != null && snapshot.status() != AccessGate.Status.NOT_WORN;
-        serial = incoming.serial(); snapshot = incoming;
-        if (wasVisible && incoming.status() == AccessGate.Status.NOT_WORN) screen.init(MC, screen.width, screen.height);
+        serial = incoming.serial();
+        snapshot = incoming;
+        if (wasVisible && incoming.status() == AccessGate.Status.NOT_WORN) {
+            screen.init(MC, LogisticsPanel.screen.width, LogisticsPanel.screen.height);
+        }
         if (incoming.acknowledged() != 0 && incoming.acknowledged() == waiting) {
             waiting = 0;
-            if (incoming.result() != CacheActions.Result.OK) notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
+            if (incoming.result() != CacheActions.Result.OK) {
+                LogisticsPanel.notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
+            }
         }
-        if (!active()) { selected = -1; draggingSlider = false; draggingMaximum = false; }
-        if (selected >= incoming.cells().size() || (selected >= 0 && incoming.cells().get(selected).template().isEmpty())) selected = -1;
-        Set<String> present = new HashSet<>();
-        for (var cell : incoming.cells()) if (!cell.template().isEmpty()) {
+        if (!LogisticsPanel.active()) {
+            selected = -1;
+            draggingSlider = false;
+            draggingMaximum = false;
+        }
+        if (selected >= incoming.cells().size() || selected >= 0 && incoming.cells().get(selected).template().isEmpty()) {
+            selected = -1;
+        }
+        HashSet<String> present = new HashSet<String>();
+        for (PanelPackets.CellView cell : incoming.cells()) {
+            if (cell.template().isEmpty()) continue;
             present.add(cell.template());
-            if (!ICONS.containsKey(cell.template())) {
-                try { ICONS.put(cell.template(), ItemVariantKey.decode(cell.template(), MC.player.registryAccess()).stack(MC.player.registryAccess(), 1)); }
-                catch (IllegalArgumentException invalid) { notice("invalid_display"); }
+            if (ICONS.containsKey(cell.template())) continue;
+            try {
+                ICONS.put(cell.template(), ItemVariantKey.decode(cell.template(), (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess()).stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1));
+            }
+            catch (IllegalArgumentException invalid) {
+                LogisticsPanel.notice("invalid_display");
             }
         }
         ICONS.keySet().retainAll(present);
-        updateLayout();
+        LogisticsPanel.updateLayout();
     }
+
     private static void updateLayout() {
-        if (screen == null || snapshot == null || snapshot.status() == AccessGate.Status.NOT_WORN) { layout = null; return; }
-        // Vanilla's minimum GUI width still has room for this panel + inventory. Move only visual coordinates.
-        int count = active() ? snapshot.cells().size() : 0;
-        int availableColumns = Math.max(2, (screen.width - screen.getXSize() - 22) / PanelLayout.ROW);
-        int width = Math.min(PanelLayout.preferredWidth(count), availableColumns * PanelLayout.ROW + 10);
-        if (!bookOpen() && screen.getGuiLeft() < width + 8 && screen.width >= screen.getXSize() + width + 12) {
-            int old = screen.getGuiLeft(), next = width + 8, delta = next - old;
-            ((ContainerScreenAccess) screen).fmp$setLeft(next);
-            for (var child : screen.children()) if (child instanceof AbstractWidget widget && widget.getX() >= old && widget.getX() < old + screen.getXSize())
+        if (screen == null || snapshot == null || snapshot.status() == AccessGate.Status.NOT_WORN) {
+            layout = null;
+            return;
+        }
+        int count = LogisticsPanel.active() ? snapshot.cells().size() : 0;
+        int availableColumns = Math.max(2, (LogisticsPanel.screen.width - screen.getXSize() - 12 - 2 * PanelLayout.SIDE) / PanelLayout.ROW);
+        int width = Math.min(PanelLayout.preferredWidth(count), availableColumns * PanelLayout.ROW + 2 * PanelLayout.SIDE);
+        if (!LogisticsPanel.bookOpen() && screen.getGuiLeft() < width + 8 && LogisticsPanel.screen.width >= screen.getXSize() + width + 12) {
+            int old = screen.getGuiLeft();
+            int next = width + 8;
+            int delta = next - old;
+            ((ContainerScreenAccess)screen).fmp$setLeft(next);
+            for (GuiEventListener child : screen.children()) {
+                AbstractWidget widget;
+                if (!(child instanceof AbstractWidget) || (widget = (AbstractWidget)child).getX() < old || widget.getX() >= old + screen.getXSize()) continue;
                 widget.setX(widget.getX() + delta);
+            }
         }
-        layout = PanelLayout.compute(screen.height, screen.getGuiLeft(), screen.getGuiTop(), count, firstRow, active() ? selected : -1, bookOpen());
-        int availableHeight = screen.height - overlayBottomInset;
-        for (var child : screen.children()) if (child instanceof AbstractWidget widget && widget.visible && widget.getY() >= screen.height / 2) {
-            var b = layout.bounds();
-            if (widget.getX() < b.x() + b.width() && widget.getX() + widget.getWidth() > b.x())
-                availableHeight = Math.min(availableHeight, widget.getY() - 2);
+        layout = PanelLayout.compute(LogisticsPanel.screen.height, screen.getGuiLeft(), screen.getGuiTop(), count, firstRow, LogisticsPanel.active() ? selected : -1, LogisticsPanel.bookOpen());
+        int availableHeight = LogisticsPanel.screen.height - overlayBottomInset;
+        for (GuiEventListener child : screen.children()) {
+            if (!(child instanceof AbstractWidget)) continue;
+            AbstractWidget widget = (AbstractWidget)child;
+            if (!widget.visible || widget.getY() < LogisticsPanel.screen.height / 2) continue;
+            PanelLayout.Rect b = layout.bounds();
+            if (widget.getX() >= b.x() + b.width() || widget.getX() + widget.getWidth() <= b.x()) continue;
+            availableHeight = Math.min(availableHeight, widget.getY() - 2);
         }
-        if (availableHeight != screen.height)
-            layout = PanelLayout.compute(availableHeight, screen.getGuiLeft(), screen.getGuiTop(), count, firstRow, active() ? selected : -1, bookOpen());
+        if (availableHeight != LogisticsPanel.screen.height) {
+            layout = PanelLayout.compute(availableHeight, screen.getGuiLeft(), screen.getGuiTop(), count, firstRow, LogisticsPanel.active() ? selected : -1, LogisticsPanel.bookOpen());
+        }
         firstRow = layout.firstRow();
     }
 
     private static void foreground(ContainerScreenEvent.Render.Foreground event) {
-        if (!current(event.getContainerScreen()) || !visible() || layout.compact()) return;
-        mouseX = event.getMouseX(); mouseY = event.getMouseY(); tooltip = List.of();
-        var g = event.getGuiGraphics(); g.pose().pushPose();
-        g.pose().translate(-screen.getGuiLeft(), -screen.getGuiTop(), 0);
-        render(g); g.pose().popPose();
+        if (!LogisticsPanel.current((Screen)event.getContainerScreen()) || !LogisticsPanel.visible() || layout.compact()) {
+            return;
+        }
+        mouseX = event.getMouseX();
+        mouseY = event.getMouseY();
+        tooltip = List.of();
+        GuiGraphics g = event.getGuiGraphics();
+        g.pose().pushPose();
+        g.pose().translate((float)(-screen.getGuiLeft()), (float)(-screen.getGuiTop()), 0.0f);
+        LogisticsPanel.render(g);
+        g.pose().popPose();
     }
+
     private static void postRender(ScreenEvent.Render.Post event) {
-        if (!current(event.getScreen()) || !visible()) return;
-        mouseX = event.getMouseX(); mouseY = event.getMouseY();
+        if (!LogisticsPanel.current(event.getScreen()) || !LogisticsPanel.visible()) {
+            return;
+        }
+        mouseX = event.getMouseX();
+        mouseY = event.getMouseY();
         if (layout.compact()) {
-            tooltip = List.of(); button(event.getGuiGraphics(), layout.bounds().x(), layout.bounds().y(), "+", "expand");
+            tooltip = List.of();
+            LogisticsPanel.button(event.getGuiGraphics(), layout.bounds().x(), layout.bounds().y(), "+", "expand");
         }
-        if (!tooltip.isEmpty() && MC.player.containerMenu.getCarried().isEmpty())
-            event.getGuiGraphics().renderComponentTooltip(MC.font, tooltip, mouseX, mouseY);
+        if (!tooltip.isEmpty() && LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
+            event.getGuiGraphics().renderComponentTooltip(LogisticsPanel.MC.font, tooltip, mouseX, mouseY);
+        }
     }
+
     private static void render(GuiGraphics g) {
-        var b = layout.bounds(); int x = b.x(), y = b.y();
-        frame(g, b);
-        var copy = layout.address();
-        String address = snapshot.address(); int textWidth = copy.width() - 2;
-        String displayed = MC.font.width(address) <= textWidth ? address
-                : MC.font.plainSubstrByWidth(address, Math.max(0, textWidth - MC.font.width("…"))) + "…";
-        text(g, displayed, copy.x() + 1, copy.y() + 5, copy.contains(mouseX, mouseY) ? 0xFF70462A : 0xFF514333);
-        if (copy.contains(mouseX, mouseY)) tooltip = List.of(tr("address"), Component.literal(address));
-        if (!active() || !snapshot.bound()) {
-            text(g, "!", x + 4, y + 11, 0xFF714A40);
-            if (new PanelLayout.Rect(x + 4, y + 11, 6, 9).contains(mouseX, mouseY))
-                tooltip = List.of(tr(active() ? "unbound" : "status." + snapshot.status().name().toLowerCase(Locale.ROOT)));
+        PanelLayout.Rect b = layout.bounds();
+        int x = b.x();
+        int y = b.y();
+        LogisticsPanel.frame(g, b);
+        PanelLayout.Rect copy = layout.address();
+        String address = snapshot.address();
+        int textWidth = copy.width() - 2;
+        String displayed = LogisticsPanel.MC.font.width(address) <= textWidth ? address : LogisticsPanel.MC.font.plainSubstrByWidth(address, Math.max(0, textWidth - LogisticsPanel.MC.font.width("\u2026"))) + "\u2026";
+        LogisticsPanel.text(g, displayed, copy.x() + 1, copy.y() + 3, copy.contains(mouseX, mouseY) ? -9419222 : 0xFF000000);
+        if (copy.contains(mouseX, mouseY)) {
+            tooltip = List.of(LogisticsPanel.tr("address", new Object[0]), Component.literal((String)address));
         }
-        if (active()) {
-            for (var cell : layout.cells()) renderCell(g, cell);
-            if (layout.slider() != null) renderSlider(g);
-            if (layout.returnBar() != null) renderReturnBar(g);
+        if (!LogisticsPanel.active() || !snapshot.bound()) {
+            LogisticsPanel.text(g, "!", x + 10, y + 20, -9352640);
+            if (new PanelLayout.Rect(x + 10, y + 20, 6, 9).contains(mouseX, mouseY)) {
+                tooltip = List.of(LogisticsPanel.tr((String)(LogisticsPanel.active() ? "unbound" : "status." + snapshot.status().name().toLowerCase(Locale.ROOT)), new Object[0]));
+            }
         }
-        int fy = layout.footerY();
-        if (waiting != 0) overlay(g, x + 4, y + 20, 4, 2, 0xFFE6C178);
+        if (LogisticsPanel.active()) {
+            for (PanelLayout.CellBox cell : layout.cells()) {
+                LogisticsPanel.renderCell(g, cell);
+            }
+            if (layout.slider() != null) {
+                LogisticsPanel.renderSlider(g);
+            }
+            if (layout.returnBar() != null) {
+                LogisticsPanel.renderReturnBar(g);
+            }
+        }
+        if (waiting != 0) {
+            LogisticsPanel.overlay(g, x + 10, y + 31, 4, 2, -1654408);
+        }
         if (feedback != null && tick < feedbackUntil) {
-            text(g, "!", x + 4, y + 11, 0xFFFFB16B);
-            if (new PanelLayout.Rect(x + 4, y + 11, 6, 9).contains(mouseX, mouseY)) tooltip = List.of(feedback);
+            LogisticsPanel.text(g, "!", x + 10, y + 20, -20117);
+            if (new PanelLayout.Rect(x + 10, y + 20, 6, 9).contains(mouseX, mouseY)) {
+                tooltip = List.of(feedback);
+            }
         }
         if (layout.totalRows() > layout.visibleRows()) {
-            int rail = fy - y - PanelLayout.HEADER;
-            g.fill(x + b.width() - 4, y + PanelLayout.HEADER, x + b.width() - 2, y + PanelLayout.HEADER + rail, 0xFF302F2C);
-            int thumb = Math.max(7, rail * layout.visibleRows() / layout.totalRows());
-            int offset = (rail - thumb) * firstRow / Math.max(1, layout.totalRows() - layout.visibleRows());
-            g.fill(x + b.width() - 4, y + PanelLayout.HEADER + offset, x + b.width() - 2, y + PanelLayout.HEADER + offset + thumb, 0xFFC0A366);
+            PanelLayout.Rect rail = layout.scrollbar();
+            g.fill(rail.x(), rail.y(), rail.x() + rail.width(), rail.y() + rail.height(), -13619412);
+            int thumb = Math.max(7, rail.height() * layout.visibleRows() / layout.totalRows());
+            int offset = (rail.height() - thumb) * firstRow / Math.max(1, layout.totalRows() - layout.visibleRows());
+            g.fill(rail.x(), rail.y() + offset, rail.x() + rail.width(), rail.y() + offset + thumb, -4152474);
         }
     }
+
     private static void renderCell(GuiGraphics g, PanelLayout.CellBox box) {
-        var r = box.bounds(); var cell = snapshot.cells().get(box.slot()); int x = r.x(), y = r.y();
-        AllGuiTextures.STOCK_KEEPER_REQUEST_SLOT.render(g, x, y);
-        var icon = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
+        PanelLayout.Rect r = box.bounds();
+        PanelPackets.CellView cell = snapshot.cells().get(box.slot());
+        int x = r.x();
+        int y = r.y();
+        renderSlot(g, x, y);
+        ItemStack icon = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
         if (!icon.isEmpty()) {
-            if (cell.amount() == 0) g.setColor(1, 1, 1, .45f);
-            g.renderItem(icon, x + 1, y + 1); g.setColor(1, 1, 1, 1);
-            String amount = Integer.toString(cell.amount()); float scale = Math.min(1f, 16f / MC.font.width(amount));
-            g.pose().pushPose(); g.pose().translate(x + 17 - MC.font.width(amount) * scale, y + 17 - MC.font.lineHeight * scale, 190); g.pose().scale(scale, scale, 1);
-            g.drawString(MC.font, amount, 0, 0, cell.amount() == 0 ? 0xFF969081 : 0xFFF5E8C6, true); g.pose().popPose();
+            if (cell.amount() == 0) {
+                g.setColor(1.0f, 1.0f, 1.0f, 0.45f);
+            }
+            g.renderItem(icon, x + 1, y + 1);
+            g.setColor(1.0f, 1.0f, 1.0f, 1.0f);
+            String amount = Integer.toString(cell.amount());
+            float scale = Math.min(1.0f, 16.0f / (float)LogisticsPanel.MC.font.width(amount));
+            g.pose().pushPose();
+            PoseStack poseStack = g.pose();
+            float f = (float)(x + 17) - (float)LogisticsPanel.MC.font.width(amount) * scale;
+            float f2 = y + 17;
+            Objects.requireNonNull(LogisticsPanel.MC.font);
+            poseStack.translate(f, f2 - 9.0f * scale, 190.0f);
+            g.pose().scale(scale, scale, 1.0f);
+            g.drawString(LogisticsPanel.MC.font, amount, 0, 0, cell.amount() == 0 ? -6909823 : -661306, true);
+            g.pose().popPose();
         }
         boolean hover = r.contains(mouseX, mouseY);
         if (cell.residual()) {
-            overlay(g, x + 1, y + 13, 3, 3, 0xFF82C665);
-            if (hover && new PanelLayout.Rect(x, y + 11, 6, 7).contains(mouseX, mouseY)) tooltip = List.of(tr("residual"));
+            LogisticsPanel.overlay(g, x + 1, y + 13, 3, 3, -8206747);
+            if (hover && new PanelLayout.Rect(x, y + 11, 6, 7).contains(mouseX, mouseY)) {
+                tooltip = List.of(LogisticsPanel.tr("residual", new Object[0]));
+            }
         }
         if (!cell.template().isEmpty() && cell.minimum() >= 0 && cell.amount() < cell.minimum() * cell.stackSize()) {
-            int color = cell.pending() > 0 ? 0xFF82C665 : 0xFF93938B;
-            overlay(g, x + 3, y + 1, 1, 3, color); overlay(g, x + 1, y + 3, 5, 1, color); overlay(g, x + 2, y + 4, 3, 1, color);
+            int color = cell.pending() > 0 ? -8206747 : -7105653;
+            LogisticsPanel.overlay(g, x + 3, y + 1, 1, 3, color);
+            LogisticsPanel.overlay(g, x + 1, y + 3, 5, 1, color);
+            LogisticsPanel.overlay(g, x + 2, y + 4, 3, 1, color);
         }
         if (!cell.template().isEmpty() && cell.maximum() >= 0 && cell.amount() > cell.maximum() * cell.stackSize()) {
-            int color = 0xFFE0955A;
-            overlay(g, x + 1, y + 1, 5, 1, color); overlay(g, x + 2, y + 2, 3, 1, color); overlay(g, x + 3, y + 3, 1, 3, color);
+            int color = -2058918;
+            LogisticsPanel.overlay(g, x + 1, y + 1, 5, 1, color);
+            LogisticsPanel.overlay(g, x + 2, y + 2, 3, 1, color);
+            LogisticsPanel.overlay(g, x + 3, y + 3, 1, 3, color);
         }
-        if (hover && !cell.template().isEmpty()) overlay(g, box.dot().x(), box.dot().y() + 1, 4, 4, 0xFFE0C27E);
+        if (hover && !cell.template().isEmpty()) {
+            LogisticsPanel.overlay(g, box.dot().x(), box.dot().y() + 1, 4, 4, -2047362);
+        }
         if (hover) {
-            tooltip = new ArrayList<>();
-            if (!icon.isEmpty()) { tooltip.addAll(Screen.getTooltipFromItem(MC, icon)); tooltip.add(tr("stock", cell.amount(), snapshot.groupCapacity() * cell.stackSize())); if (cell.stackSize() > 1) tooltip.add(tr("stock_groups", cell.amount() / cell.stackSize(), snapshot.groupCapacity())); }
-            if (cell.minimum() >= 0 && cell.amount() < cell.minimum() && mouseX < x + 7 && mouseY < y + 7)
-                tooltip = List.of(tr(cell.pending() > 0 ? "requested" : "shortage"));
-            if (box.dot().contains(mouseX, mouseY) && !cell.template().isEmpty()) tooltip = List.of(tr("configure"));
+            tooltip = new ArrayList<Component>();
+            if (!icon.isEmpty()) {
+                tooltip.addAll(Screen.getTooltipFromItem((Minecraft)MC, (ItemStack)icon));
+                tooltip.add(LogisticsPanel.tr("stock", cell.amount(), snapshot.groupCapacity() * cell.stackSize()));
+                if (cell.stackSize() > 1) {
+                    tooltip.add(LogisticsPanel.tr("stock_groups", cell.amount() / cell.stackSize(), snapshot.groupCapacity()));
+                }
+            }
+            if (cell.minimum() >= 0 && cell.amount() < cell.minimum() && mouseX < x + 7 && mouseY < y + 7) {
+                tooltip = List.of(LogisticsPanel.tr(cell.pending() > 0 ? "requested" : "shortage", new Object[0]));
+            }
+            if (box.dot().contains(mouseX, mouseY) && !cell.template().isEmpty()) {
+                tooltip = List.of(LogisticsPanel.tr("configure", new Object[0]));
+            }
         }
     }
+
+    private static void renderSlot(GuiGraphics g, int x, int y) {
+        // A clean 18x18 slot in the supplied reference area; contains no text or item.
+        panelBlit(g, x, y, 18, 18, 101, 65, 18, 18);
+    }
+
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
         return sliderX + 3 + (value < 0 ? 0 : Math.max(1, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
     }
-    /** Scathiard-drawn panel atlas: textures/gui/panel.png (256x256). Regions measured from the art. */
-    private static final ResourceLocation PANEL = ResourceLocation.fromNamespaceAndPath(FeedMePackages.MOD_ID, "textures/gui/panel.png");
+
     private static void panelBlit(GuiGraphics g, int sx, int sy, int sw, int sh, int u, int v, int w, int h) {
-        g.pose().pushPose(); g.pose().translate(sx, sy, 0); g.pose().scale(sw / (float) w, sh / (float) h, 1f);
-        g.blit(PANEL, 0, 0, u, v, w, h, 256, 256); g.pose().popPose();
+        // All pieces are pixel-sized. A partial repeat is cropped, never scaled.
+        if (sw > 0 && sh > 0) g.blit(PANEL, sx, sy, (float) u, (float) v, sw, sh, 256, 256);
     }
+
     private static void renderSlider(GuiGraphics g) {
-        var r = layout.slider(); var cell = snapshot.cells().get(selected);
+        int maxN;
+        int minN;
+        PanelLayout.Rect r = layout.slider();
+        PanelPackets.CellView cell = snapshot.cells().get(selected);
         int groupCap = snapshot.groupCapacity();
-        int x = r.x(), y = r.y(), w = r.width();
-        // No disabled state: min=0 means "no supply", max=-1 shows as full capacity ("no return").
-        int minN = draggingSlider ? draftMinimum : cell.minimum(); if (minN < 0) minN = 0;
-        int maxN = draggingMaximum ? draftMaximum : cell.maximum(); if (maxN < 0) maxN = groupCap;
-        int minAt = thumbPx(x, w, minN, groupCap);
-        int maxAt = thumbPx(x, w, maxN, groupCap);
-        g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        // Scathiard-drawn slider: left cap + looping middle + right cap, spanning exactly the thumb
-        // range (width-10) so the track never runs past either endpoint.
-        int tx = x + 3, ty = y + 7, trackW = w - 10;
-        panelBlit(g, tx, ty, 4, 5, 0, 1, 4, 5);
-        int midX = tx + 4, midEnd = tx + trackW - 4;
-        while (midX + 3 <= midEnd) { panelBlit(g, midX, ty, 3, 5, 17, 1, 3, 5); midX += 3; }
-        if (midX < midEnd) panelBlit(g, midX, ty, midEnd - midX, 5, 17, 1, 3, 5);
-        panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
-        panelBlit(g, minAt - 2, y + 5, 5, 9, 1, 49, 5, 9);
-        panelBlit(g, maxAt - 2, y + 5, 5, 9, 1, 49, 5, 9);
-        // Fixed-edge labels: minimum on the left, maximum on the right (they can never overlap).
+        int x = r.x();
+        int y = r.y();
+        int w = r.width();
+        int n = minN = draggingSlider ? draftMinimum : cell.minimum();
+        if (minN < 0) {
+            minN = 0;
+        }
+        int n2 = maxN = draggingMaximum ? draftMaximum : cell.maximum();
+        if (maxN < 0) {
+            maxN = groupCap;
+        }
+        int minAt = LogisticsPanel.thumbPx(x, w, minN, groupCap);
+        int maxAt = LogisticsPanel.thumbPx(x, w, maxN, groupCap);
+        g.pose().pushPose();
+        g.pose().translate(0.0f, 0.0f, 250.0f);
+        int tx = x + 3;
+        int ty = y + 7;
+        int trackW = w - 10;
+        LogisticsPanel.panelBlit(g, tx, ty, 4, 5, 0, 1, 4, 5);
+        int midX = tx + 4;
+        int midEnd = tx + trackW - 4;
+        while (midX + 3 <= midEnd) {
+            LogisticsPanel.panelBlit(g, midX, ty, 3, 5, 17, 1, 3, 5);
+            midX += 3;
+        }
+        if (midX < midEnd) {
+            LogisticsPanel.panelBlit(g, midX, ty, midEnd - midX, 5, 17, 1, 3, 5);
+        }
+        LogisticsPanel.panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
+        LogisticsPanel.panelBlit(g, minAt - 2, y + 5, 5, 9, 0, 11, 5, 9);
+        LogisticsPanel.panelBlit(g, maxAt - 2, y + 5, 5, 9, 0, 11, 5, 9);
         String minLabel = String.valueOf(minN * cell.stackSize());
-        float s1 = Math.min(1f, 20f / MC.font.width(minLabel));
-        g.pose().pushPose(); g.pose().translate(x + 3, y + 14, 190); g.pose().scale(s1, s1, 1);
-        g.drawString(MC.font, minLabel, 0, 0, 0xFFE5D8B6, false); g.pose().popPose();
+        float s1 = Math.min(8.0f / 9.0f, (w - 8) / 2.0f / (float)LogisticsPanel.MC.font.width(minLabel));
+        g.pose().pushPose();
+        g.pose().translate((float)(x + 3), (float)(y + 14), 190.0f);
+        g.pose().scale(s1, s1, 1.0f);
+        g.drawString(LogisticsPanel.MC.font, minLabel, 0, 0, -1713994, false);
+        g.pose().popPose();
         String maxLabel = String.valueOf(maxN * cell.stackSize());
-        float s2 = Math.min(1f, 20f / MC.font.width(maxLabel));
-        g.pose().pushPose(); g.pose().translate(x + w - 3 - MC.font.width(maxLabel) * s2, y + 14, 190); g.pose().scale(s2, s2, 1);
-        g.drawString(MC.font, maxLabel, 0, 0, 0xFFE0955A, false); g.pose().popPose();
-        if (r.contains(mouseX, mouseY)) {
-            if (mouseY < y + 10) tooltip = List.of(tr(mouseX <= minAt ? "minimum_help" : "maximum_help"));
+        float s2 = Math.min(8.0f / 9.0f, (w - 8) / 2.0f / (float)LogisticsPanel.MC.font.width(maxLabel));
+        g.pose().pushPose();
+        g.pose().translate((float)(x + w - 3) - (float)LogisticsPanel.MC.font.width(maxLabel) * s2, (float)(y + 14), 190.0f);
+        g.pose().scale(s2, s2, 1.0f);
+        g.drawString(LogisticsPanel.MC.font, maxLabel, 0, 0, -2058918, false);
+        g.pose().popPose();
+        if (r.contains(mouseX, mouseY) && mouseY < y + 10) {
+            tooltip = List.of(LogisticsPanel.tr(mouseX <= minAt ? "minimum_help" : "maximum_help", new Object[0]));
         }
         g.pose().popPose();
     }
+
     private static void renderReturnBar(GuiGraphics g) {
-        var r = layout.returnBar();
-        int x = r.x(), y = r.y(), w = r.width(), h = r.height();
-        // Scathiard's reference composition: the white input field (with the golden curl) from his
-        // mockup, rendered at the bar's size. Text is drawn on top with the font.
-        panelBlit(g, x, y, w, h, 79, 138, 70, 24);
+        boolean placeholder;
+        PanelLayout.Rect r = layout.returnBar();
+        int x = r.x();
+        int y = r.y();
+        int w = r.width();
+        int h = r.height();
+        // Background and hook were drawn once by frame(); only live text goes here.
         String value = returnEditing ? returnBuffer : (snapshot.returnAddress() == null ? "" : snapshot.returnAddress());
-        int textWidth = w - 12;
-        boolean placeholder = value.isEmpty() && !returnEditing;
-        String shown = placeholder ? tr("return_label").getString()
-                : MC.font.width(value) <= textWidth ? value : MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - MC.font.width("…"))) + "…";
-        text(g, shown, x + 9, y + h / 2 - MC.font.lineHeight / 2, placeholder ? 0xFF8A7E68 : (returnEditing ? 0xFF4A3B28 : 0xFF5E523F));
+        int textWidth = Math.max(0, w - 12);
+        boolean bl = placeholder = value.isEmpty() && !returnEditing;
+        String shown = placeholder ? LogisticsPanel.tr("return_label", new Object[0]).getString() : (LogisticsPanel.MC.font.width(value) <= textWidth ? value : LogisticsPanel.MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - LogisticsPanel.MC.font.width("\u2026"))) + "\u2026");
+        int n = y + h / 2;
+        Objects.requireNonNull(LogisticsPanel.MC.font);
+        LogisticsPanel.text(g, shown, x + 9, n - 9 / 2, placeholder ? -7700888 : (returnEditing ? -11912408 : 0xFF000000));
         if (returnEditing) {
-            int caretX = x + 9 + MC.font.width(shown);
-            g.fill(caretX, y + 4, caretX + 1, y + h - 4, 0xFF4A3B28);
+            int caretX = Math.min(x + w - 3, x + 9 + LogisticsPanel.MC.font.width(shown));
+            g.fill(caretX, y + 4, caretX + 1, y + h - 4, -11912408);
         }
-        if (r.contains(mouseX, mouseY)) tooltip = List.of(tr(returnEditing ? "return_editing" : "return_hint"));
+        if (r.contains(mouseX, mouseY)) {
+            tooltip = List.of(LogisticsPanel.tr(returnEditing ? "return_editing" : "return_hint", new Object[0]));
+        }
     }
 
     private static void frame(GuiGraphics g, PanelLayout.Rect b) {
         int x = b.x(), y = b.y(), w = b.width(), h = b.height();
-        // Scathiard 9-slice panel: corners native, edges tiled from his short loop strips (0 scaling).
-        panelBlit(g, x, y, 22, Math.min(36, h), 18, 47, 22, 36);
-        panelBlit(g, x + w - 22, y, 22, Math.min(36, h), 53, 47, 22, 36);
-        panelBlit(g, x, y + h - Math.min(49, h), 22, Math.min(49, h), 18, 91, 22, 49);
-        panelBlit(g, x + w - 14, y + h - Math.min(49, h), 14, Math.min(49, h), 53, 91, 14, 49);
-        for (int tx = x + 22; tx < x + w - 22; tx += 1) panelBlit(g, tx, y, 1, Math.min(36, h), 44, 47, 1, 36);
-        for (int tx = x + 22; tx < x + w - 14; tx += 1) panelBlit(g, tx, y + h - Math.min(49, h), 1, Math.min(49, h), 44, 91, 1, 49);
-        for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4) panelBlit(g, x, ty, 14, 4, 26, 85, 14, 4);
-        for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4) panelBlit(g, x + w - 14, ty, 14, 4, 53, 85, 14, 4);
-        for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 5)
-            for (int tx = x + 14; tx < x + w - 14; tx += 2)
-                panelBlit(g, tx, ty, Math.min(2, x + w - 14 - tx), Math.min(5, y + h - Math.min(49, h) - ty), 44, 85, 2, 5);
+        int bottom = y + h - 49;
+        // Top caps include the ribbon and the first 18 pixels of wooden backing.
+        panelBlit(g, x, y, 22, 36, 18, 47, 22, 36);
+        panelBlit(g, x + w - 22, y, 22, 36, 53, 47, 22, 36);
+        for (int tx = x + 22; tx < x + w - 22; tx++)
+            panelBlit(g, tx, y, 1, 36, 44, 47, 1, 36);
+        // The repeat strip is FOUR pixels tall and ONE pixel wide in its centre.
+        // u=45 and v=89 are transparent atlas gutters, not repeatable wood.
+        for (int ty = y + 36; ty < bottom; ty += 4) {
+            int sh = Math.min(4, bottom - ty);
+            panelBlit(g, x + 8, ty, 14, sh, 26, 85, 14, sh);
+            panelBlit(g, x + w - 22, ty, 14, sh, 53, 85, 14, sh);
+            for (int tx = x + 22; tx < x + w - 22; tx++)
+                panelBlit(g, tx, ty, 1, sh, 44, 85, 1, sh);
+        }
+        // This single footer already contains the hook AND the blank address tag.
+        panelBlit(g, x, bottom, 22, 49, 18, 91, 22, 49);
+        panelBlit(g, x + w - 22, bottom, 22, 49, 53, 91, 22, 49);
+        for (int tx = x + 22; tx < x + w - 22; tx++)
+            panelBlit(g, tx, bottom, 1, 49, 44, 91, 1, 49);
     }
+
     private static void button(GuiGraphics g, int x, int y, String label, String help) {
         boolean hover = new PanelLayout.Rect(x, y, 18, 18).contains(mouseX, mouseY);
         (hover ? AllGuiTextures.BUTTON_HOVER : AllGuiTextures.BUTTON).render(g, x, y);
-        text(g, label, x + (18 - MC.font.width(label)) / 2, y + 5, 0xFFF0E3C3);
-        if (hover) tooltip = help.equals("address") ? List.of(tr("address"), Component.literal(snapshot.address())) : List.of(tr(help));
+        LogisticsPanel.text(g, label, x + (18 - LogisticsPanel.MC.font.width(label)) / 2, y + 5, -990269);
+        if (hover) {
+            tooltip = help.equals("address") ? List.of(LogisticsPanel.tr("address", new Object[0]), Component.literal((String)snapshot.address())) : List.of(LogisticsPanel.tr(help, new Object[0]));
+        }
     }
+
     private static void text(GuiGraphics g, String value, int x, int y, int color) {
-        g.pose().pushPose(); g.pose().translate(0, 0, 190); g.drawString(MC.font, value, x, y, color, false); g.pose().popPose();
+        g.pose().pushPose();
+        g.pose().translate(0.0f, 0.0f, 190.0f);
+        g.drawString(LogisticsPanel.MC.font, value, x, y, color, false);
+        g.pose().popPose();
     }
+
     private static void overlay(GuiGraphics g, int x, int y, int w, int h, int color) {
-        g.pose().pushPose(); g.pose().translate(0, 0, 190); g.fill(x, y, x + w, y + h, color); g.pose().popPose();
+        g.pose().pushPose();
+        g.pose().translate(0.0f, 0.0f, 190.0f);
+        g.fill(x, y, x + w, y + h, color);
+        g.pose().popPose();
     }
 
     private static boolean press(double x, double y, int button) {
-        if (!visible()) return false;
-        if (waiting != 0) { capturedButton = button; return true; }
-        if (!layout.bounds().contains(x, y)) return false;
-        // Clicking anywhere other than the return bar exits return-address editing, so typing never
-        // leaks into the wrong field after the player changes focus.
-        if (returnEditing && !(active() && layout.returnBar() != null && layout.returnBar().contains(x, y))) returnEditing = false;
+        if (!LogisticsPanel.visible()) {
+            return false;
+        }
+        if (waiting != 0) {
+            capturedButton = button;
+            return true;
+        }
+        if (!layout.bounds().contains(x, y)) {
+            return false;
+        }
+        if (!(!returnEditing || LogisticsPanel.active() && layout.returnBar() != null && layout.returnBar().contains(x, y))) {
+            returnEditing = false;
+        }
         capturedButton = button;
-        if (button != 0 && button != 1) return true;
-        // A return-bar click always starts editing.
-        if (active() && layout.returnBar() != null && layout.returnBar().contains(x, y)) {
-            returnEditing = true; returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress(); return true;
+        if (button != 0 && button != 1) {
+            return true;
+        }
+        if (LogisticsPanel.active() && layout.returnBar() != null && layout.returnBar().contains(x, y)) {
+            returnEditing = true;
+            returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress();
+            return true;
         }
         if (layout.compact()) {
-            if (bookOpen()) { ((RecipeUpdateListener)screen).getRecipeBookComponent().toggleVisibility(); screen.init(MC, screen.width, screen.height); }
-            updateLayout(); return true;
-        }
-        int px = layout.bounds().x(), py = layout.bounds().y();
-        if (layout.address().contains(x, y)) { MC.keyboardHandler.setClipboard(snapshot.address()); notice("copied"); return true; }
-        int fy = layout.footerY();
-        if (x >= px + layout.bounds().width() - 4 && y >= py + PanelLayout.HEADER && y < fy) {
-            firstRow = (int)((y - py - PanelLayout.HEADER) * Math.max(0, layout.totalRows() - layout.visibleRows()) / Math.max(1, fy - py - PanelLayout.HEADER));
-            selected = -1; updateLayout(); return true;
-        }
-        if (!active()) return true;
-        var slider = layout.slider();
-        if (slider != null && slider.contains(x, y)) {
-            // Dragging is the only way to set thresholds; grab whichever thumb is closest.
-            int groupCap = snapshot.groupCapacity();
-            var cell = snapshot.cells().get(selected);
-            int minAt = thumbPx(slider.x(), slider.width(), cell.minimum() < 0 ? 0 : cell.minimum(), groupCap);
-            int maxAt = thumbPx(slider.x(), slider.width(), cell.maximum() < 0 ? groupCap : cell.maximum(), groupCap);
-            if (Math.abs(x - maxAt) < Math.abs(x - minAt)) { draggingMaximum = true; setDraftMaximum(x); }
-            else { draggingSlider = true; setDraft(x); }
+            if (LogisticsPanel.bookOpen()) {
+                ((RecipeUpdateListener)screen).getRecipeBookComponent().toggleVisibility();
+                screen.init(MC, LogisticsPanel.screen.width, LogisticsPanel.screen.height);
+            }
+            LogisticsPanel.updateLayout();
             return true;
         }
-        for (var box : layout.cells()) if (box.bounds().contains(x, y)) {
-            var cell = snapshot.cells().get(box.slot());
-            if (box.dot().contains(x, y) && !cell.template().isEmpty() && MC.player.containerMenu.getCarried().isEmpty()) {
-                selected = selected == box.slot() ? -1 : box.slot(); updateLayout(); return true;
+        int px = layout.bounds().x();
+        int py = layout.bounds().y();
+        if (layout.address().contains(x, y)) {
+            LogisticsPanel.MC.keyboardHandler.setClipboard(snapshot.address());
+            LogisticsPanel.notice("copied");
+            return true;
+        }
+        PanelLayout.Rect rail = layout.scrollbar();
+        if (layout.totalRows() > layout.visibleRows() && rail.contains(x, y)) {
+            firstRow = (int) Math.round((y - rail.y()) * (layout.totalRows() - layout.visibleRows())
+                    / Math.max(1, rail.height() - 1));
+            selected = -1;
+            LogisticsPanel.updateLayout();
+            return true;
+        }
+        if (!LogisticsPanel.active()) {
+            return true;
+        }
+        PanelLayout.Rect slider = layout.slider();
+        if (slider != null && slider.contains(x, y)) {
+            int groupCap = snapshot.groupCapacity();
+            PanelPackets.CellView cell = snapshot.cells().get(selected);
+            int minAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.minimum() < 0 ? 0 : cell.minimum(), groupCap);
+            int maxAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.maximum() < 0 ? groupCap : cell.maximum(), groupCap);
+            if (Math.abs(x - (double)maxAt) < Math.abs(x - (double)minAt)) {
+                draggingMaximum = true;
+                LogisticsPanel.setDraftMaximum(x);
+            } else {
+                draggingSlider = true;
+                LogisticsPanel.setDraft(x);
             }
-            if (button == 1 && Screen.hasControlDown()) send(Action.CLEAR_FILTER, box.slot(), 0, -1, "");
-            else if (!MC.player.containerMenu.getCarried().isEmpty()) send(Action.DEPOSIT, box.slot(), button == 1 ? 1 : 0, -1, "");
-            else {
-                var item = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
-                send(Screen.hasShiftDown() ? Action.TAKE_INVENTORY : Action.TAKE_CURSOR, box.slot(), button == 1 ? 1 : item.getMaxStackSize(), -1, "");
+            return true;
+        }
+        for (PanelLayout.CellBox box : layout.cells()) {
+            if (!box.bounds().contains(x, y)) continue;
+            PanelPackets.CellView cell = snapshot.cells().get(box.slot());
+            if (box.dot().contains(x, y) && !cell.template().isEmpty() && LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
+                selected = selected == box.slot() ? -1 : box.slot();
+                LogisticsPanel.updateLayout();
+                return true;
+            }
+            if (button == 1 && Screen.hasControlDown()) {
+                LogisticsPanel.send(CacheActions.Action.CLEAR_FILTER, box.slot(), 0, -1, "");
+            } else if (!LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
+                LogisticsPanel.send(CacheActions.Action.DEPOSIT, box.slot(), button == 1 ? 1 : 0, -1, "");
+            } else {
+                ItemStack item = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
+                LogisticsPanel.send(Screen.hasShiftDown() ? CacheActions.Action.TAKE_INVENTORY : CacheActions.Action.TAKE_CURSOR, box.slot(), button == 1 ? 1 : item.getMaxStackSize(), -1, "");
             }
             return true;
         }
         return true;
     }
+
     private static boolean release(double x, double y, int button) {
-        if (!visible()) { capturedButton = -1; return false; }
-        if (waiting != 0) { if (capturedButton == button) capturedButton = -1; return true; }
+        if (!LogisticsPanel.visible()) {
+            capturedButton = -1;
+            return false;
+        }
+        if (waiting != 0) {
+            if (capturedButton == button) {
+                capturedButton = -1;
+            }
+            return true;
+        }
         if (draggingSlider) {
-            setDraft(x); draggingSlider = false; sendMinimum(draftMinimum); capturedButton = -1; return true;
+            LogisticsPanel.setDraft(x);
+            draggingSlider = false;
+            LogisticsPanel.sendMinimum(draftMinimum);
+            capturedButton = -1;
+            return true;
         }
         if (draggingMaximum) {
-            setDraftMaximum(x); draggingMaximum = false; sendMaximum(draftMaximum); capturedButton = -1; return true;
+            LogisticsPanel.setDraftMaximum(x);
+            draggingMaximum = false;
+            LogisticsPanel.sendMaximum(draftMaximum);
+            capturedButton = -1;
+            return true;
         }
-        if (capturedButton == button) { capturedButton = -1; return true; }
+        if (capturedButton == button) {
+            capturedButton = -1;
+            return true;
+        }
         if (layout.bounds().contains(x, y)) {
-            if (active() && (button == 0 || button == 1) && !MC.player.containerMenu.getCarried().isEmpty()
-                    && (layout.slider() == null || !layout.slider().contains(x, y)))
-                for (var box : layout.cells()) if (box.bounds().contains(x, y)) send(Action.DEPOSIT, box.slot(), button == 1 ? 1 : 0, -1, "");
+            if (!(!LogisticsPanel.active() || button != 0 && button != 1 || LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty() || layout.slider() != null && layout.slider().contains(x, y))) {
+                for (PanelLayout.CellBox box : layout.cells()) {
+                    if (!box.bounds().contains(x, y)) continue;
+                    LogisticsPanel.send(CacheActions.Action.DEPOSIT, box.slot(), button == 1 ? 1 : 0, -1, "");
+                }
+            }
             return true;
         }
         return false;
     }
+
     private static boolean scroll(double x, double y, double amount) {
-        if (!visible() || !layout.bounds().contains(x, y)) return false;
-        if (waiting != 0 || layout.compact()) return true;
-        // Dragging is the only way to set thresholds; the wheel only pages the cell list.
+        if (!LogisticsPanel.visible() || !layout.bounds().contains(x, y)) {
+            return false;
+        }
+        if (waiting != 0 || layout.compact()) {
+            return true;
+        }
         if (layout.slider() == null || !layout.slider().contains(x, y)) {
-            firstRow += amount > 0 ? -1 : 1; selected = -1; updateLayout();
+            firstRow += amount > 0.0 ? -1 : 1;
+            selected = -1;
+            LogisticsPanel.updateLayout();
         }
         return true;
     }
+
     private static boolean key(int key, int scan, int modifiers) {
-        return visible() && waiting != 0 && key != GLFW.GLFW_KEY_ESCAPE;
+        return LogisticsPanel.visible() && waiting != 0 && key != 256;
     }
+
     private static boolean editReturnKey(int keyCode) {
-        if (keyCode == GLFW.GLFW_KEY_ESCAPE) { returnEditing = false; return true; }
-        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            if (send(Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer)) returnEditing = false; else notice("result.stale");
+        if (keyCode == 256) {
+            returnEditing = false;
             return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_BACKSPACE) { if (!returnBuffer.isEmpty()) returnBuffer = returnBuffer.substring(0, returnBuffer.length() - 1); return true; }
+        if (keyCode == 257 || keyCode == 335) {
+            if (LogisticsPanel.send(CacheActions.Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer)) {
+                returnEditing = false;
+            } else {
+                LogisticsPanel.notice("result.stale");
+            }
+            return true;
+        }
+        if (keyCode == 259) {
+            if (!returnBuffer.isEmpty()) {
+                returnBuffer = returnBuffer.substring(0, returnBuffer.length() - 1);
+            }
+            return true;
+        }
         return false;
     }
+
     private static void setDraft(double x) {
-        if (layout.slider() == null) return;
+        if (layout.slider() == null) {
+            return;
+        }
         int groupCap = snapshot.groupCapacity();
-        double relative = x - layout.slider().x() - 3;
-        int min = Math.clamp((int)Math.round(relative * groupCap / (layout.slider().width() - 10)), 0, groupCap);
-        int cap = snapshot.cells().get(selected).maximum(); if (cap < 0) cap = groupCap;
-        if (draggingMaximum) cap = draftMaximum;
+        double relative = x - (double)layout.slider().x() - 3.0;
+        int min = Math.clamp((long)((int)Math.round(relative * (double)groupCap / (double)(layout.slider().width() - 10))), (int)0, (int)groupCap);
+        int cap = snapshot.cells().get(selected).maximum();
+        if (cap < 0) {
+            cap = groupCap;
+        }
+        if (draggingMaximum) {
+            cap = draftMaximum;
+        }
         draftMinimum = Math.min(min, cap);
     }
+
     private static void setDraftMaximum(double x) {
-        if (layout.slider() == null) return;
+        if (layout.slider() == null) {
+            return;
+        }
         int groupCap = snapshot.groupCapacity();
-        double relative = x - layout.slider().x() - 3;
-        // Dragging to the far right = "no return" (-1); the client displays that as full capacity and it
-        // therefore follows the cache's capacity across upgrades automatically. Any other position sets
-        // a specific group maximum (clamped above the supply minimum).
-        if (relative >= layout.slider().width() - 13) { draftMaximum = -1; return; }
-        int max = Math.clamp((int)Math.round(relative * groupCap / (layout.slider().width() - 10)), 0, groupCap);
-        int lower = snapshot.cells().get(selected).minimum(); if (lower < 0) lower = 0;
-        if (draggingSlider) lower = draftMinimum;
+        double relative = x - (double)layout.slider().x() - 3.0;
+        if (relative >= (double)(layout.slider().width() - 13)) {
+            draftMaximum = -1;
+            return;
+        }
+        int max = Math.clamp((long)((int)Math.round(relative * (double)groupCap / (double)(layout.slider().width() - 10))), (int)0, (int)groupCap);
+        int lower = snapshot.cells().get(selected).minimum();
+        if (lower < 0) {
+            lower = 0;
+        }
+        if (draggingSlider) {
+            lower = draftMinimum;
+        }
         draftMaximum = Math.max(max, lower);
     }
+
     private static void sendThresholds(int min, int max) {
-        if (selected < 0 || !active()) return;
-        // min=0 means "no supply"; the client keeps max=-1 ("no return") or a specific group maximum.
-        send(Action.THRESHOLDS, selected, min < 0 ? 0 : min, max, "");
+        if (selected < 0 || !LogisticsPanel.active()) {
+            return;
+        }
+        LogisticsPanel.send(CacheActions.Action.THRESHOLDS, selected, min < 0 ? 0 : min, max, "");
     }
-    private static void sendMinimum(int minimum) { sendThresholds(minimum, snapshot.cells().get(selected).maximum()); }
-    private static void sendMaximum(int maximum) { sendThresholds(snapshot.cells().get(selected).minimum(), maximum); }
-    public static boolean recipeReady() { return active() && waiting == 0 && window != null; }
+
+    private static void sendMinimum(int minimum) {
+        LogisticsPanel.sendThresholds(minimum, snapshot.cells().get(selected).maximum());
+    }
+
+    private static void sendMaximum(int maximum) {
+        LogisticsPanel.sendThresholds(snapshot.cells().get(selected).minimum(), maximum);
+    }
+
+    public static boolean recipeReady() {
+        return LogisticsPanel.active() && waiting == 0 && window != null;
+    }
+
     public static boolean fillRecipe(ResourceLocation recipe, boolean maximum) {
-        return recipeReady() && send(Action.FILL_RECIPE, 0, maximum ? 1 : 0, -1, recipe.toString());
+        return LogisticsPanel.recipeReady() && LogisticsPanel.send(CacheActions.Action.FILL_RECIPE, 0, maximum ? 1 : 0, -1, recipe.toString());
     }
+
     public static List<PanelLayout.CellBox> visibleCells(Screen candidate) {
-        if (!current(candidate) || !active() || layout == null || layout.compact() || waiting != 0) return List.of();
+        if (!LogisticsPanel.current(candidate) || !LogisticsPanel.active() || layout == null || layout.compact() || waiting != 0) {
+            return List.of();
+        }
         return layout.cells();
     }
+
     public static List<PanelLayout.Rect> exclusions(Screen candidate) {
-        return current(candidate) && visible() ? List.of(layout.bounds()) : List.of();
+        return LogisticsPanel.current(candidate) && LogisticsPanel.visible() ? List.of(layout.bounds()) : List.of();
     }
-    private static boolean send(Action action, int slot, int first, int second, String template) {
-        if (snapshot == null || snapshot.session() == null || waiting != 0 || window == null) return false;
-        boolean creative = screen instanceof CreativeModeInventoryScreen && (action == Action.DEPOSIT || action == Action.TAKE_CURSOR);
-        String cursor = ""; int count = 0;
-        if (creative) {
-            var held = MC.player.containerMenu.getCarried();
-            if (!held.isEmpty()) {
-                try { cursor = ItemVariantKey.of(held, MC.player.registryAccess()).encoded(); count = held.getCount(); }
-                catch (IllegalArgumentException invalid) { notice("result.invalid_item"); return false; }
+
+    private static boolean send(CacheActions.Action action, int slot, int first, int second, String template) {
+        ItemStack held;
+        if (snapshot == null || snapshot.session() == null || waiting != 0 || window == null) {
+            return false;
+        }
+        boolean creative = screen instanceof CreativeModeInventoryScreen && (action == CacheActions.Action.DEPOSIT || action == CacheActions.Action.TAKE_CURSOR);
+        String cursor = "";
+        int count = 0;
+        if (creative && !(held = LogisticsPanel.MC.player.containerMenu.getCarried()).isEmpty()) {
+            try {
+                cursor = ItemVariantKey.of(held, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess()).encoded();
+                count = held.getCount();
+            }
+            catch (IllegalArgumentException invalid) {
+                LogisticsPanel.notice("result.invalid_item");
+                return false;
             }
         }
-        var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), action, slot, first, second, template);
-        waiting = ++sequence; waitingSince = tick;
-        PacketDistributor.sendToServer(new PanelPackets.Command(window, waiting, intent, creative, cursor, count)); return true;
+        CacheActions.Intent intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), action, slot, first, second, template);
+        waiting = ++sequence;
+        waitingSince = tick;
+        PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, waiting, intent, creative, cursor, count), (CustomPacketPayload[])new CustomPacketPayload[0]);
+        return true;
     }
-    private static Component tr(String key, Object... args) { return Component.translatable("gui.create_feed_me_packages." + key, args); }
-    private static void notice(String key) { feedback = tr(key); feedbackUntil = tick + 120; }
+
+    private static Component tr(String key, Object ... args) {
+        return Component.translatable((String)("gui.create_feed_me_packages." + key), (Object[])args);
+    }
+
+    private static void notice(String key) {
+        feedback = LogisticsPanel.tr(key, new Object[0]);
+        feedbackUntil = tick + 120;
+    }
+
+    static {
+        ICONS = new HashMap<String, ItemStack>();
+        selected = -1;
+        serial = -1L;
+        capturedButton = -1;
+        returnBuffer = "";
+        draftMaximum = -1;
+        tooltip = List.of();
+        recipeOverlay = candidate -> false;
+        PANEL = ResourceLocation.fromNamespaceAndPath((String)"create_feed_me_packages", (String)"textures/gui/panel.png");
+    }
 }
+
