@@ -9,7 +9,7 @@ class PanelLayoutTest {
         for (int count : new int[]{9, 16, 24, 30, 36}) for (int height : new int[]{208, 240, 360, 480, 1080}) {
             Set<Integer> reached = new HashSet<>();
             for (int row = 0; row < (count + 1) / 2; row++) {
-                var layout = PanelLayout.compute(height, 72, 70, count, row, -1, false);
+                var layout = PanelLayout.compute(height, 88, 70, count, row, -1, false);
                 assertFalse(layout.compact());
                 assertTrue(layout.bounds().y() >= 4 && layout.bounds().y() + layout.bounds().height() <= height - 4);
                 for (var box : layout.cells()) {
@@ -26,11 +26,11 @@ class PanelLayoutTest {
     }
     @Test void expandedSliderAndRecipeBookUseSeparateSpace() {
         for (int selected = 0; selected < 36; selected++) {
-            var layout = PanelLayout.compute(240, 260, 60, 36, 0, selected, true);
+            var layout = PanelLayout.compute(240, 265, 60, 36, 0, selected, true);
             assertFalse(layout.compact()); assertNotNull(layout.slider());
             int selectedSlot = selected;
             assertTrue(layout.cells().stream().anyMatch(cell -> cell.slot() == selectedSlot));
-            assertTrue(layout.bounds().x() + layout.bounds().width() < 260 - 177);
+            assertTrue(layout.bounds().x() + layout.bounds().width() < 265 - 177);
             // The slider is an overlay: it may visually cover cells below it (z-lift),
             // so we only verify it stays within screen bounds.
             assertTrue(layout.slider().y() + layout.slider().height() <= 240 - 4);
@@ -38,6 +38,43 @@ class PanelLayoutTest {
         var narrow = PanelLayout.compute(240, 72, 60, 36, 0, -1, true);
         assertTrue(narrow.compact()); assertEquals(18, narrow.bounds().width());
         assertTrue(narrow.cells().isEmpty());
+    }
+    @Test void sliderStaysCenteredBelowItsCellAcrossRowsColumnsAndScrolling() {
+        for (int count : new int[]{9, 16, 24, 30, 36})
+            for (int height : new int[]{104, 208, 240, 480})
+                for (int left : new int[]{88, 200, 400})
+                    for (boolean book : new boolean[]{false, true})
+                        for (int selected = 0; selected < count; selected++) {
+                            var layout = PanelLayout.compute(height, left, 70, count, 2, selected, book);
+                            if (layout.compact()) {
+                                assertNull(layout.slider());
+                                continue;
+                            }
+                            int selectedSlot = selected;
+                            var cell = layout.cells().stream().filter(c -> c.slot() == selectedSlot)
+                                    .findFirst().orElseThrow().bounds();
+                            var slider = layout.slider();
+                            assertNotNull(slider);
+                            assertEquals(cell.y() + cell.height() + 2, slider.y());
+                            assertEquals(cell.x() * 2 + cell.width(), slider.x() * 2 + slider.width());
+                            assertTrue(layout.bounds().contains(slider.x(), slider.y()));
+                            assertTrue(layout.bounds().contains(slider.x() + slider.width() - 1,
+                                    slider.y() + slider.height() - 1));
+                            assertTrue(slider.y() + slider.height() <= height - PanelLayout.MARGIN);
+                        }
+    }
+    @Test void bottomRowPopupTakesInputBeforeTheReturnAddress() {
+        var open = PanelLayout.compute(240, 200, 40, 9, 0, 8, false);
+        var slider = open.slider();
+        var address = open.returnBar();
+        int x = Math.max(slider.x(), address.x());
+        int y = Math.max(slider.y(), address.y());
+        assertTrue(slider.contains(x, y));
+        assertTrue(address.contains(x, y));
+        assertFalse(open.returnAddressContains(x, y));
+        assertTrue(open.returnAddressContains(address.x(), address.y()));
+        var closed = PanelLayout.compute(240, 200, 40, 9, 0, -1, false);
+        assertTrue(closed.returnAddressContains(x, y));
     }
     private static boolean intersects(PanelLayout.Rect a, PanelLayout.Rect b) {
         return a.x() < b.x() + b.width() && a.x() + a.width() > b.x() && a.y() < b.y() + b.height() && a.y() + a.height() > b.y();

@@ -68,6 +68,12 @@ public final class LogisticsPanel {
     private static int capturedButton;
     private static boolean returnEditing;
     private static String returnBuffer;
+    /** Client-side display prediction for the single in-flight panel intent. It only overrides one
+     *  cell's rendered number during the pre-confirmation wait; it never creates item stacks, never
+     *  touches the cache, backpack or cursor, and is cleared on ack/close/swap/timeout. */
+    private static Predict predict;
+
+    private record Predict(UUID window, UUID session, int slot, String variant, int sequence, long baseSerial, int result) {}
     private static int draftMaximum;
     private static Component feedback;
     private static int feedbackUntil;
@@ -212,6 +218,7 @@ public final class LogisticsPanel {
         }
         if (waiting != 0 && tick - waitingSince > 60) {
             waiting = 0;
+            predict = null;   // Timeout is an unknown result: drop the display prediction only, and refresh.
             LogisticsPanel.notice("timeout");
         }
         if (tick - lastQuery >= 10) {
@@ -245,6 +252,7 @@ public final class LogisticsPanel {
         snapshot = null;
         layout = null;
         waiting = 0;
+        predict = null;
         serial = -1L;
         selected = -1;
         firstRow = 0;
@@ -260,6 +268,18 @@ public final class LogisticsPanel {
     }
 
     private static void receive(PanelPackets.Snapshot incoming) {
+        // A matching acknowledgement must clear the display prediction even if the carried snapshot
+        // is stale (older serial) — otherwise a late ack leaves a ghosted number. Clearing the
+        // prediction is display-only and never cancels or re-sends a server transaction.
+        if (incoming != null && incoming.acknowledged() != 0 && incoming.acknowledged() == waiting
+                && predict != null && predict.sequence() == incoming.acknowledged()
+                && (predict.window().equals(incoming.window()) || predict.window() == null)) {
+            predict = null;
+            waiting = 0;
+            if (incoming.result() != CacheActions.Result.OK) {
+                LogisticsPanel.notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
+            }
+        }
         if (window == null || LogisticsPanel.MC.screen != screen && !recipeOverlay.test(LogisticsPanel.MC.screen) || !window.equals(incoming.window()) || incoming.serial() <= serial) {
             return;
         }
@@ -386,11 +406,11 @@ public final class LogisticsPanel {
             for (PanelLayout.CellBox cell : layout.cells()) {
                 LogisticsPanel.renderCell(g, cell);
             }
-            if (layout.slider() != null) {
-                LogisticsPanel.renderSlider(g);
-            }
             if (layout.returnBar() != null) {
                 LogisticsPanel.renderReturnBar(g);
+            }
+            if (layout.slider() != null) {
+                LogisticsPanel.renderSlider(g);
             }
         }
         if (waiting != 0) {
@@ -419,12 +439,20 @@ public final class LogisticsPanel {
         renderSlot(g, x, y);
         ItemStack icon = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
         if (!icon.isEmpty()) {
-            if (cell.amount() == 0) {
+            // Display "in-cell" quantity = cache amount minus the live cursor preview (P). During the
+            // pre-confirmation wait a client-side prediction overrides this one cell so the number
+            // changes immediately; a matching ack clears the prediction and the authoritative value
+            // (already S−P) is shown. The cache ledger (S) and restock/return decisions keep the real
+            // amount; only display uses this.
+            int display = Math.max(0, cell.amount() - cell.reserved());
+            if (predict != null && predict.slot() == box.slot() && predict.window().equals(window)
+                    && (predict.variant().equals(cell.template()))) display = Math.max(0, predict.result());
+            if (display == 0) {
                 g.setColor(1.0f, 1.0f, 1.0f, 0.45f);
             }
             g.renderItem(icon, x + 1, y + 1);
             g.setColor(1.0f, 1.0f, 1.0f, 1.0f);
-            String amount = Integer.toString(cell.amount());
+            String amount = Integer.toString(display);
             float scale = Math.min(1.0f, 16.0f / (float)LogisticsPanel.MC.font.width(amount));
             g.pose().pushPose();
             PoseStack poseStack = g.pose();
@@ -433,7 +461,7 @@ public final class LogisticsPanel {
             Objects.requireNonNull(LogisticsPanel.MC.font);
             poseStack.translate(f, f2 - 9.0f * scale, 190.0f);
             g.pose().scale(scale, scale, 1.0f);
-            g.drawString(LogisticsPanel.MC.font, amount, 0, 0, cell.amount() == 0 ? -6909823 : -661306, true);
+            g.drawString(LogisticsPanel.MC.font, amount, 0, 0, display == 0 ? -6909823 : -661306, true);
             g.pose().popPose();
         }
         boolean hover = r.contains(mouseX, mouseY);
@@ -462,12 +490,16 @@ public final class LogisticsPanel {
             tooltip = new ArrayList<Component>();
             if (!icon.isEmpty()) {
                 tooltip.addAll(Screen.getTooltipFromItem((Minecraft)MC, (ItemStack)icon));
-                tooltip.add(LogisticsPanel.tr("stock", cell.amount(), snapshot.groupCapacity() * cell.stackSize()));
+                int display = Math.max(0, cell.amount() - cell.reserved());
+                if (predict != null && predict.slot() == box.slot() && predict.window().equals(window))
+                    display = Math.max(0, predict.result());
+                tooltip.add(LogisticsPanel.tr("stock", display, snapshot.groupCapacity() * cell.stackSize()));
                 if (cell.stackSize() > 1) {
                     tooltip.add(LogisticsPanel.tr("stock_groups", cell.amount() / cell.stackSize(), snapshot.groupCapacity()));
                 }
+                if (display == 0 && cell.reserved() > 0) tooltip.add(LogisticsPanel.tr("held_preview", new Object[0]));
             }
-            if (cell.minimum() >= 0 && cell.amount() < cell.minimum() && mouseX < x + 7 && mouseY < y + 7) {
+            if (cell.minimum() >= 0 && cell.amount() < cell.minimum() * cell.stackSize() && mouseX < x + 7 && mouseY < y + 7) {
                 tooltip = List.of(LogisticsPanel.tr(cell.pending() > 0 ? "requested" : "shortage", new Object[0]));
             }
             if (box.dot().contains(mouseX, mouseY) && !cell.template().isEmpty()) {
@@ -482,12 +514,22 @@ public final class LogisticsPanel {
     }
 
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
-        return sliderX + 3 + (value < 0 ? 0 : Math.max(1, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
+        // Zero sits on the track's left edge (x+3), never pushed +1 past it. Non-zero uses the full
+        // mapped span. Both rendering and the hit test read this same function, so they stay aligned.
+        return sliderX + 3 + (value < 0 ? 0 : Math.max(0, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
     }
 
     private static void panelBlit(GuiGraphics g, int sx, int sy, int sw, int sh, int u, int v, int w, int h) {
         // All pieces are pixel-sized. A partial repeat is cropped, never scaled.
-        if (sw > 0 && sh > 0) g.blit(PANEL, sx, sy, (float) u, (float) v, sw, sh, 256, 256);
+        if (sw > 0 && sh > 0) {
+            // The panel texture carries alpha (e.g. the endpoint corners). Enable standard alpha
+            // blending for this sprite so a low-alpha pixel blends instead of being written flat,
+            // then restore the prior state so the blend never leaks to later draws.
+            com.mojang.blaze3d.systems.RenderSystem.enableBlend();
+            com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
+            g.blit(PANEL, sx, sy, (float) u, (float) v, sw, sh, 256, 256);
+            com.mojang.blaze3d.systems.RenderSystem.disableBlend();
+        }
     }
 
     private static void renderSlider(GuiGraphics g) {
@@ -631,14 +673,14 @@ public final class LogisticsPanel {
         if (!layout.bounds().contains(x, y)) {
             return false;
         }
-        if (!(!returnEditing || LogisticsPanel.active() && layout.returnBar() != null && layout.returnBar().contains(x, y))) {
+        if (!(!returnEditing || LogisticsPanel.active() && layout.returnAddressContains(x, y))) {
             returnEditing = false;
         }
         capturedButton = button;
         if (button != 0 && button != 1) {
             return true;
         }
-        if (LogisticsPanel.active() && layout.returnBar() != null && layout.returnBar().contains(x, y)) {
+        if (LogisticsPanel.active() && layout.returnAddressContains(x, y)) {
             returnEditing = true;
             returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress();
             return true;
@@ -884,8 +926,32 @@ public final class LogisticsPanel {
         CacheActions.Intent intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), action, slot, first, second, template);
         waiting = ++sequence;
         waitingSince = tick;
+        recordPredict(action, slot, first, template, waiting);
         PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, waiting, intent, creative, cursor, count), (CustomPacketPayload[])new CustomPacketPayload[0]);
         return true;
+    }
+
+    /** Record a client-only display prediction for a {TAKE_CURSOR} (pick-up) or source-cell DEPOSIT
+     *  (put-back) so the number changes immediately, before the server confirmation returns. It is a
+     *  display alias only: it never creates items or writes inventory, and is cleared on ack/close. */
+    private static void recordPredict(CacheActions.Action action, int slot, int first, String template, int sequence) {
+        if (!(action == CacheActions.Action.TAKE_CURSOR || action == CacheActions.Action.DEPOSIT)) { predict = null; return; }
+        if (snapshot == null || slot < 0 || slot >= snapshot.cells().size() || waiting == 0) { predict = null; return; }
+        var cell = snapshot.cells().get(slot);
+        if (cell.template().isEmpty()) { predict = null; return; }
+        int base = Math.max(0, cell.amount() - cell.reserved());
+        int delta;
+        if (action == CacheActions.Action.TAKE_CURSOR) {
+            // Worst-case pick-up amount is bounded by the request, the cell and the native stack cap.
+            int cap = cell.stackSize();
+            delta = Math.min(Math.max(0, base), Math.min(Math.max(0, first), cap));
+        } else {
+            // Source-cell put-back returns the carried stack to this cell; delta <= carried count.
+            int carried = LogisticsPanel.MC.player.containerMenu.getCarried().getCount();
+            delta = Math.min(carried, Math.max(0, cell.stackSize() - base));
+        }
+        int result = action == CacheActions.Action.TAKE_CURSOR ? Math.max(0, base - delta) : base + delta;
+        predict = new Predict(window, snapshot.session(), slot, cell.template(), sequence, serial, result);
     }
 
     private static Component tr(String key, Object ... args) {
@@ -909,4 +975,3 @@ public final class LogisticsPanel {
         PANEL = ResourceLocation.fromNamespaceAndPath((String)"create_feed_me_packages", (String)"textures/gui/panel.png");
     }
 }
-

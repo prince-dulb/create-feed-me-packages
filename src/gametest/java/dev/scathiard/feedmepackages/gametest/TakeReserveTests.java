@@ -1,16 +1,23 @@
 package dev.scathiard.feedmepackages.gametest;
 
 import dev.scathiard.feedmepackages.FeedMePackages;
+import dev.scathiard.feedmepackages.consumption.CraftingService;
+import dev.scathiard.feedmepackages.consumption.MaterialTransaction;
 import dev.scathiard.feedmepackages.interaction.CacheActions;
 import dev.scathiard.feedmepackages.interaction.CursorReservations;
 import dev.scathiard.feedmepackages.logistics.SupplyService;
 import dev.scathiard.feedmepackages.registry.FmpRegistries;
 import dev.scathiard.feedmepackages.service.AccessGate;
 import dev.scathiard.feedmepackages.storage.CacheLedger;
+import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.ContainerLevelAccess;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Blocks;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -116,5 +123,83 @@ public final class TakeReserveTests {
     private static int stoneCount(net.minecraft.world.entity.player.Inventory inv) {
         int total = 0; for (int i = 0; i < 36; i++) if (inv.getItem(i).is(Items.STONE)) total += inv.getItem(i).getCount();
         return total;
+    }
+
+    // T3 (Planner §5 "实际放下"): S=120, take 8 as a cursor preview (P=8), then place the whole 8 into
+    // the backpack (cursor empties) and let the panel settle via snapshot. The placed 8 must be
+    // deducted from the cache (S=112) and the cursor preview cleared (P=0), with no leak or double charge.
+    @GameTest(template = "empty")
+    public static void t3PlacedItemsSettleThroughValidatedSnapshot(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120 stones
+        var player = f.player();
+        player.getInventory().setItem(0, ItemStack.EMPTY); // room to receive the placed stack
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8, "Preview take failed");
+        helper.assertTrue(preview(f) == 8, "Preview P not recorded");
+        // Place all 8 into the backpack; the cursor empties.
+        player.getInventory().setItem(0, player.containerMenu.getCarried()); player.containerMenu.setCarried(ItemStack.EMPTY);
+        helper.assertTrue(player.getInventory().getItem(0).getCount() == 8, "Backpack did not receive the placed stack");
+        // The panel settle reads the real cursor state and deducts what left the cache (validate -> debit).
+        CacheActions.snapshot(player);
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 16, "Placed 8 not deducted from cache (S=" + stock(f) + ", expected 112)");
+        helper.assertTrue(preview(f) == 0, "Placed 8 left a dangling preview");
+        helper.assertTrue(player.getInventory().getItem(0).getCount() == 8, "Placed stack was not conserved in the backpack");
+        helper.succeed();
+    }
+
+    // T14 (Planner §5 "保存恢复"): a cursor preview is transient and never serialized, while the
+    // confirmed cache stock persists. Save with a pending preview, reload: no preview copy survives,
+    // no confirmed items are lost.
+    @GameTest(template = "empty")
+    public static void t14SaveReloadKeepsConfirmedStockButNotTransientPreview(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && preview(f) == 8, "Preview take failed");
+        var registry = f.player().registryAccess();
+        var saved = CacheLedger.load(f.ledger().save(new net.minecraft.nbt.CompoundTag(), registry), registry);
+        helper.assertTrue(saved.problem().isEmpty(), "Ledger reload reported a problem");
+        helper.assertTrue(saved.find(f.handle().cacheId()).state().cells().getFirst().amount() == ReceiveTests.FULL - 8,
+                "Confirmed stock changed across save/load (expected S=120)");
+        helper.assertTrue(dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 8,
+                "Pending preview should remain a runtime reservation after reload (not persisted)");
+        helper.succeed();
+    }
+
+    // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
+    @GameTest(template = "empty")
+    public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120 stones
+        var player = f.player();
+        var table = helper.absolutePos(new BlockPos(2, 1, 2)); helper.setBlock(new BlockPos(2, 1, 2), Blocks.CRAFTING_TABLE);
+        player.setPos(table.getX(), table.getY() + 1, table.getZ());
+        player.containerMenu = new CraftingMenu(37, player.getInventory(), ContainerLevelAccess.create(helper.getLevel(), table));
+        var stone = new ItemStack(Items.STONE);
+        // One non-maximum 2x2 stone-brick placement reserves exactly 4 stones (C=4).
+        helper.assertTrue(CraftingService.place(player, recipe(player, "stone_bricks"), false, false, true) == CraftingService.Result.OK,
+                "Crafting reservation setup failed");
+        int craftingReserved = dev.scathiard.feedmepackages.consumption.CraftingReservations.reservedCache(f.handle().cacheId(), 0, null);
+
+        // Cursor preview P=8 of the same variant through the panel session.
+        var view = CacheActions.open(player);
+        helper.assertTrue(CacheActions.execute(player, new CacheActions.Intent(view.session(), view.record().state().revision(),
+                CacheActions.Action.TAKE_CURSOR, 0, 8, -1, "")) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8, "Preview take failed");
+        int cursorReserved = dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0);
+
+        // The shared reserve gate must equal C+P, and a parallel consumer sees exactly S−P−C.
+        int gate = dev.scathiard.feedmepackages.consumption.CraftingReservations.reservedCache(f.handle().cacheId(), 0, null);
+        helper.assertTrue(gate == craftingReserved + cursorReserved,
+                "Reserve gate did not sum crafting (C) and cursor (P) reserves: gate=" + gate + " C=" + craftingReserved + " P=" + cursorReserved);
+        int expected = 120 - craftingReserved - cursorReserved;
+        int available = MaterialTransaction.open(player).orElseThrow().available(stone);
+        helper.assertTrue(gate == 120 - available,
+                "Parallel consumer available was " + available + " but S−gate = " + (120 - gate) + " (expected A = S − P − C, no leak or double-charge)");
+        helper.succeed();
+    }
+
+    private static net.minecraft.world.item.crafting.RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>
+            recipe(ServerPlayer player, String id) {
+        return (net.minecraft.world.item.crafting.RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>)
+                player.getServer().getRecipeManager().byKey(net.minecraft.resources.ResourceLocation.withDefaultNamespace(id)).orElseThrow();
     }
 }

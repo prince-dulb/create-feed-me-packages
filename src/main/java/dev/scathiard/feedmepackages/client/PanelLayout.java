@@ -23,6 +23,10 @@ public record PanelLayout(Rect bounds, List<CellBox> cells, Rect slider, Rect re
     public Rect address() {
         return new Rect(bounds.x() + 11, bounds.y() + 1, bounds.width() - 22, 13);
     }
+    public boolean returnAddressContains(double x, double y) {
+        return returnBar != null && returnBar.contains(x, y)
+                && (slider == null || !slider.contains(x, y));
+    }
     public Rect scrollbar() {
         return new Rect(bounds.x() + bounds.width() - 13, bounds.y() + HEADER,
                 2, visibleRows * ROW);
@@ -68,11 +72,10 @@ public record PanelLayout(Rect bounds, List<CellBox> cells, Rect slider, Rect re
                         new Rect(x + SIDE + column * ROW, cy, ROW, ROW)));
             }
             if (hasSelection && row == expanded / columns) {
-                // Overlay only; do not move cells or let the slider cover the return address.
-                int sy = rows == 1 ? gridBottom + BAR + 2
-                        : Math.max(y + HEADER, Math.min(cy + ROW, gridBottom - SLIDER));
-                slider = new Rect(x + SIDE + Math.min(expanded % columns, columns - 2) * ROW,
-                        sy, 2 * ROW, SLIDER);
+                // Keep the popup attached to its cell, including the last row/column.
+                // The footer has room for its bottom-row overhang; input goes to the popup first.
+                slider = new Rect(x + SIDE + (expanded % columns) * ROW - ROW / 2,
+                        cy + ROW + 2, 2 * ROW, SLIDER);
             }
         }
         // The label is already part of the bottom end caps (source rows 99..116).

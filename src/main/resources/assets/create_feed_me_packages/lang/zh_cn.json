@@ -27,6 +27,7 @@
   "gui.create_feed_me_packages.empty": "空缓存格：放入实物以设过滤",
   "gui.create_feed_me_packages.stock": "缓存现货：%s / %s",
   "gui.create_feed_me_packages.stock_groups": "库存组：%s / %s 组",
+  "gui.create_feed_me_packages.held_preview": "持在光标",
   "gui.create_feed_me_packages.slot_help": "左键取一组，右键取一件；Shift 入背包",
   "gui.create_feed_me_packages.pending": "待收 %s 件",
   "gui.create_feed_me_packages.requested": "库存不足，已请求补货",
