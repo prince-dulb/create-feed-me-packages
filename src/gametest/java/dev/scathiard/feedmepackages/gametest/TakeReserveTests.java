@@ -204,6 +204,33 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T8 (Planner §5 "真实点击" / P-0090 §1): in the ORDINARY InventoryMenu (runtime-supported=true),
+    // a real native menu.clicked onto inventory[0] (InventoryMenu menu slot 36) settles the cursor
+    // preview through the click wrapper — S=112, P=0, inventory[0] receives 8, no auto-place elsewhere.
+    @GameTest(template = "empty")
+    public static void t8RealClickInBackpackSettlesPreview(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120 stones
+        var player = f.player();
+        player.getInventory().setItem(0, ItemStack.EMPTY);
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8 && preview(f) == 8, "Preview take failed");
+        // Locate the menu slot whose container is the player inventory and container-slot is 0.
+        int menuSlot = -1;
+        for (int i = 0; i < player.containerMenu.slots.size(); i++) {
+            var slot = player.containerMenu.getSlot(i);
+            if (slot.container == player.getInventory() && slot.getContainerSlot() == 0) { menuSlot = i; break; }
+        }
+        helper.assertTrue(menuSlot >= 0, "Could not locate inventory[0] menu slot");
+        int stonesBefore = 0; for (int i = 0; i < 36; i++) if (player.getInventory().getItem(i).is(Items.STONE)) stonesBefore += player.getInventory().getItem(i).getCount();
+        player.containerMenu.clicked(menuSlot, 0, net.minecraft.world.inventory.ClickType.PICKUP, player);
+        int stonesAfter = 0; for (int i = 0; i < 36; i++) if (player.getInventory().getItem(i).is(Items.STONE)) stonesAfter += player.getInventory().getItem(i).getCount();
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 16, "Real click did not settle S (S=" + stock(f) + ", expected 112)");
+        helper.assertTrue(preview(f) == 0, "Real click left a dangling preview");
+        helper.assertTrue(player.containerMenu.getCarried().isEmpty(), "Real click left the stack on the cursor");
+        helper.assertTrue(stonesAfter - stonesBefore == 8, "Real click did not place 8 into the backpack (moved " + (stonesAfter - stonesBefore) + ")");
+        helper.succeed();
+    }
+
     // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
     @GameTest(template = "empty")
     public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
