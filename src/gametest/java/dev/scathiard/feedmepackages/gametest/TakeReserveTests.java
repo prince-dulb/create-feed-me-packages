@@ -180,6 +180,7 @@ public final class TakeReserveTests {
         CacheActions.close(player);
         helper.assertTrue(stock(f) == ReceiveTests.FULL - 8, "Close changed cache stock (expected S=120, got " + stock(f) + ")");
         helper.assertTrue(preview(f) == 0, "Close left a lingering preview");
+        helper.assertTrue(player.containerMenu.getCarried().isEmpty(), "Close left the preview stack on the cursor");
         helper.assertTrue(player.getInventory().getItem(0).isEmpty(), "Close auto-placed the unplaced stack into the backpack");
         helper.succeed();
     }
