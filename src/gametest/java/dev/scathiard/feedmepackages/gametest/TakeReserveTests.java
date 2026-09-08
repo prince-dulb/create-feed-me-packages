@@ -165,6 +165,25 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T9 (Planner §5 "生命周期"，Scathiard 2026-09-08 拍板：关闭=取消取出留缓存): closing with a
+    // pending cursor preview must cancel the take (items stay in the cache) — stock unchanged, no
+    // preview left, and the unplaced stack is NOT placed into the backpack.
+    @GameTest(template = "empty")
+    public static void t9CloseCancelsPreviewLeavingStockInCache(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120 stones
+        var player = f.player();
+        player.getInventory().setItem(0, ItemStack.EMPTY); // room, but close must NOT place into it
+        player.containerMenu.setCarried(ItemStack.EMPTY);
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8 && preview(f) == 8, "Preview take failed");
+        // Close the panel: the unplaced preview is cancelled (kept in cache), not auto-placed.
+        CacheActions.close(player);
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 8, "Close changed cache stock (expected S=120, got " + stock(f) + ")");
+        helper.assertTrue(preview(f) == 0, "Close left a lingering preview");
+        helper.assertTrue(player.getInventory().getItem(0).isEmpty(), "Close auto-placed the unplaced stack into the backpack");
+        helper.succeed();
+    }
+
     // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
     @GameTest(template = "empty")
     public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
