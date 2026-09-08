@@ -29,29 +29,6 @@ public final class CacheLedger extends SavedData {
     private Map<UUID, Boolean> cacheFirst = Map.of();
     private Map<UUID, ParcelRedirect> redirects = Map.of();
     private Map<UUID, String> returnAddresses = Map.of();
-    /** Transient take reservations: items picked up from a cache but not yet confirmed to have left
-     *  the cache stock. Never persisted; a menu close or reconnect settles or releases them. */
-    private final Map<UUID, Map<ItemVariantKey, Integer>> pendingTakes = new HashMap<>();
-    public int pendingTake(UUID cacheId, ItemVariantKey variant) {
-        var byVariant = pendingTakes.get(cacheId);
-        return byVariant == null ? 0 : byVariant.getOrDefault(variant, 0);
-    }
-    public void reserveTake(UUID cacheId, ItemVariantKey variant, int amount) {
-        if (amount <= 0) return;
-        pendingTakes.computeIfAbsent(cacheId, k -> new HashMap<>()).merge(variant, amount, Integer::sum);
-    }
-    /** Release part of a reservation (a take was reverted). Returns the released count. */
-    public int releaseTake(UUID cacheId, ItemVariantKey variant, int amount) {
-        var byVariant = pendingTakes.get(cacheId);
-        if (byVariant == null) return 0;
-        int held = byVariant.getOrDefault(variant, 0);
-        int released = Math.min(amount, held);
-        int left = held - released;
-        if (left <= 0) byVariant.remove(variant); else byVariant.put(variant, left);
-        if (byVariant.isEmpty()) pendingTakes.remove(cacheId);
-        return released;
-    }
-    public void clearTakes(UUID cacheId) { pendingTakes.remove(cacheId); }
     private String problem = "";
     private CompoundTag preserved;
     private byte[] integrityKey = createIntegrityKey();

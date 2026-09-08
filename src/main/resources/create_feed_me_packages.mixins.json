@@ -4,7 +4,7 @@
   "package": "dev.scathiard.feedmepackages.mixin",
   "compatibilityLevel": "JAVA_21",
   "plugin": "dev.scathiard.feedmepackages.mixin.OptionalMixins",
-  "mixins": ["PackageStampMixin", "InventoryReceiveMixin", "MobileReceiveMixin", "MobileStorageMixin", "PaperStorageMixin", "PlayerAmmoMixin", "ProjectileAmmoMixin", "CraftingItemsAccess", "RecipeBookPlacementMixin", "CraftingRefillMixin", "CraftingClickMixin", "CraftingQuickMoveMixin", "CraftingPickupMixin", "SmithingMenuMixin", "SmithingClickMixin", "SmithingQuickMoveMixin", "SmithingPacketMixin"],
+  "mixins": ["PackageStampMixin", "InventoryReceiveMixin", "MobileReceiveMixin", "MobileStorageMixin", "PaperStorageMixin", "PlayerAmmoMixin", "ProjectileAmmoMixin", "CraftingItemsAccess", "RecipeBookPlacementMixin", "CraftingRefillMixin", "CraftingClickMixin", "CraftingQuickMoveMixin", "CraftingPickupMixin", "SmithingMenuMixin", "SmithingClickMixin", "SmithingQuickMoveMixin", "SmithingPacketMixin", "CursorCreativePacketMixin"],
   "client": ["ContainerScreenAccess", "RecipeBookHintsMixin", "RecipeCollectionHintsMixin"],
   "injectors": {"defaultRequire": 1}
 }

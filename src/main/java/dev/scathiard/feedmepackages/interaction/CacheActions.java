@@ -18,7 +18,7 @@ import java.util.*;
 /** Server-side panel intent interpreter. A session is context, never a substitute for current access. */
 public final class CacheActions {
     private CacheActions() {}
-    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS, CONFIRM_TAKE, RELEASE_TAKE }
+    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS }
     public enum Result { OK, STALE, NOT_ACTIVE, INVALID_ITEM, DUPLICATE_FILTER, FILTER_OCCUPIED, NO_SPACE, INVALID_REQUEST, MISSING_MATERIAL, UNSUPPORTED_RECIPE, TOO_COMPLEX }
     public record Intent(UUID session, long revision, Action action, int slot, int first, int second, String template) {
         public Intent {
@@ -45,10 +45,9 @@ public final class CacheActions {
     }
 
     public static void close(ServerPlayer player) {
+        // Cancel any unplaced cursor preview (the cache amount was never deducted for it).
+        CursorReservations.cancel(player);
         SESSIONS.remove(player);
-        // The panel settles/releases residual takes before closing; here we only forget session state.
-        var access = AccessGate.resolve(player);
-        if (access.active()) CacheLedger.get(player.getServer()).clearTakes(access.handle().cacheId());
     }
 
     public static View snapshot(ServerPlayer player) {
@@ -61,6 +60,7 @@ public final class CacheActions {
     }
 
     public static void validateOpenContext(ServerPlayer player) {
+        CursorReservations.validate(player);
         var session = SESSIONS.get(player); if (session == null) return;
         var access = AccessGate.resolve(player);
         if (session.menu().get() != player.containerMenu || !Objects.equals(session.handle(), access.handle())
@@ -117,6 +117,10 @@ public final class CacheActions {
         var carried = creativeCursor == null ? player.containerMenu.getCarried() : creativeCursor;
         int slot = intent.slot();
         if (slot < 0 || slot >= before.state().cells().size()) return Result.INVALID_REQUEST;
+        // A cursor preview/return is settled by the real cursor events; it is handled before the
+        // cell actions below so a held preview never re-enters a plain insert (which would add stock).
+        Result cursorResult = CursorReservations.action(player, access.handle(), slot, intent, creativeCursor);
+        if (cursorResult != null) return cursorResult;
         var cell = before.state().cells().get(slot); var edit = before.state().edit();
         ItemStack nextCursor = null; InventoryTransfer.Plan inventoryPlan = null;
         switch (intent.action()) {
@@ -133,39 +137,18 @@ public final class CacheActions {
                 edit.filter(slot, variant);
                 int moved = edit.insert(slot, variant, intent.first() == 1 ? 1 : carried.getCount());
                 if (moved == 0) return Result.NO_SPACE;
-                // Depositing an item that is reserved counts as returning it: release the take.
-                ledger.releaseTake(access.handle().cacheId(), variant, moved);
                 nextCursor = carried.copy(); nextCursor.shrink(moved);
             }
-            case TAKE_CURSOR, TAKE_INVENTORY -> {
+            case TAKE_INVENTORY -> {
+                // Shift-take is a real placement: it deducts immediately, leaving no pending preview.
                 if (cell.filter() == null || cell.amount() == 0) return Result.NO_SPACE;
                 var prototype = cell.filter().stack(player.registryAccess(), 1);
                 if (intent.first() < 1) return Result.INVALID_REQUEST;
-                int reserved = ledger.pendingTake(access.handle().cacheId(), cell.filter());
-                int available = Math.min(Math.max(0, cell.amount() - CraftingReservations.reservedCache(access.handle().cacheId(), slot, null) - reserved), intent.first()); int moved;
-                if (intent.action() == Action.TAKE_CURSOR) {
-                    if (!carried.isEmpty() && !ItemStack.isSameItemSameComponents(carried, prototype)) return Result.NO_SPACE;
-                    moved = Math.min(available, Math.max(0, prototype.getMaxStackSize() - carried.getCount()));
-                    nextCursor = prototype.copyWithCount(carried.getCount() + moved);
-                } else {
-                    inventoryPlan = InventoryTransfer.insert(player.getInventory(), prototype, available); moved = inventoryPlan.moved();
-                }
+                int available = Math.min(Math.max(0, cell.amount() - CraftingReservations.reservedCache(access.handle().cacheId(), slot, null)), intent.first());
+                inventoryPlan = InventoryTransfer.insert(player.getInventory(), prototype, available);
+                int moved = inventoryPlan.moved();
                 if (moved == 0) return Result.NO_SPACE;
-                // Take reserves the stock (cache amount unchanged); the real deduction happens when the
-                // player confirms the items left the cache (CONFIRM_TAKE), or it is released on return.
-                ledger.reserveTake(access.handle().cacheId(), cell.filter(), moved);
-            }
-            case CONFIRM_TAKE -> {
-                if (cell.filter() == null) return Result.NO_SPACE;
-                int held = ledger.pendingTake(access.handle().cacheId(), cell.filter());
-                int confirm = Math.min(held, Math.max(0, intent.first()));
-                if (confirm == 0) return Result.NO_SPACE;
-                ledger.releaseTake(access.handle().cacheId(), cell.filter(), confirm);
-                edit.extract(slot, confirm);
-            }
-            case RELEASE_TAKE -> {
-                if (cell.filter() == null) return Result.NO_SPACE;
-                ledger.releaseTake(access.handle().cacheId(), cell.filter(), Math.max(0, intent.first()));
+                edit.extract(slot, moved);
             }
             case CLEAR_FILTER -> {
                 if (cell.amount() != 0) return Result.FILTER_OCCUPIED;

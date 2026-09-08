@@ -104,8 +104,8 @@ public final class InteractionTests {
         TestPlayers.nativePackets(player);
         player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
         var command = intent(player, Action.TAKE_CURSOR, 0, 1, -1, "");
-        helper.assertTrue(CacheActions.executeCreative(player, command, "", 0) == Result.OK, "Creative withdrawal failed");
-        helper.assertTrue(execute(player, Action.CONFIRM_TAKE, 0, 1, "") == Result.OK && f.record().state().cells().getFirst().amount() == 0, "Creative take did not confirm");
+        helper.assertTrue(CacheActions.executeCreative(player, command, "", 0) == Result.OK
+                && f.record().state().cells().getFirst().amount() == 1, "Creative withdrawal failed or deducted on preview");
         player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(36, new ItemStack(Items.STONE)));
         player.connection.handleContainerClose(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(0));
         int total = player.getInventory().items.stream().filter(s -> s.is(Items.STONE)).mapToInt(ItemStack::getCount).sum();
@@ -205,11 +205,16 @@ public final class InteractionTests {
         player.containerMenu.setCarried(new ItemStack(Items.STONE, 4));
         helper.assertTrue(execute(player, Action.DEPOSIT, 0, 0, "") == Result.OK && stock(player, 0) == 68, "Repeat deposit changed or rejected same filter");
         helper.assertTrue(execute(player, Action.TAKE_CURSOR, 0, 64, "") == Result.OK && stock(player, 0) == 68 && player.containerMenu.getCarried().getCount() == 64, "Full stack transfer is wrong");
-        helper.assertTrue(execute(player, Action.CONFIRM_TAKE, 0, 64, "") == Result.OK && stock(player, 0) == 4, "Confirmed take did not deduct");
+        // A cursor preview only becomes a real deduction when the items leave the cursor. Move all 64
+        // into the backpack (empty bag slot 0 -> cursor clears) then let the panel settle via snapshot.
         player.getInventory().setItem(0, player.containerMenu.getCarried()); player.containerMenu.setCarried(ItemStack.EMPTY);
+        CacheActions.snapshot(player);
+        helper.assertTrue(stock(player, 0) == 4, "Placed preview did not deduct (expected S=4)");
         helper.assertTrue(execute(player, Action.TAKE_CURSOR, 0, 64, "") == Result.OK && player.containerMenu.getCarried().getCount() == 4 && stock(player, 0) == 4, "Small remainder was dropped or lost");
-        helper.assertTrue(execute(player, Action.CONFIRM_TAKE, 0, 4, "") == Result.OK && stock(player, 0) == 0, "Confirmed remainder did not deduct");
-        helper.assertTrue(player.getInventory().getItem(0).getCount() + player.containerMenu.getCarried().getCount() == 68, "Cursor withdrawal did not conserve total");
+        player.getInventory().setItem(1, player.containerMenu.getCarried()); player.containerMenu.setCarried(ItemStack.EMPTY);
+        CacheActions.snapshot(player);
+        helper.assertTrue(stock(player, 0) == 0, "Placed remainder did not deduct (expected S=0)");
+        helper.assertTrue(player.getInventory().getItem(0).getCount() + player.getInventory().getItem(1).getCount() == 68, "Cursor withdrawal did not conserve total");
         helper.succeed();
     }
 
@@ -227,8 +232,8 @@ public final class InteractionTests {
         player.getInventory().setItem(0, new ItemStack(Items.EGG, 15)); player.getInventory().setItem(1, ItemStack.EMPTY);
         var move = intent(player, Action.TAKE_INVENTORY, 0, Integer.MAX_VALUE, -1, "");
         helper.assertTrue(CacheActions.execute(player, move) == Result.OK, "Partial insertion failed");
-        helper.assertTrue(player.getInventory().getItem(0).getCount() == 16 && player.getInventory().getItem(1).getCount() == 16 && stock(player, 0) == 64, "Native 16 stack limit was ignored");
-        helper.assertTrue(execute(player, Action.CONFIRM_TAKE, 0, 17, "") == Result.OK && stock(player, 0) == 47, "Confirmed inventory take did not deduct");
+        // Shift-take settles immediately: the inserted 17 (slot0 15->16 + slot1 empty->16) is deducted now.
+        helper.assertTrue(player.getInventory().getItem(0).getCount() == 16 && player.getInventory().getItem(1).getCount() == 16 && stock(player, 0) == 47, "Native 16 stack limit was ignored");
         helper.assertTrue(CacheActions.execute(player, move) == Result.STALE && stock(player, 0) == 47, "Replayed transfer consumed twice");
         helper.assertTrue(execute(player, Action.TAKE_INVENTORY, 0, 64, "") == Result.NO_SPACE && stock(player, 0) == 47, "No-room operation discarded stock");
         helper.succeed();
@@ -300,7 +305,6 @@ public final class InteractionTests {
                 "Creative caller bypassed native cursor ownership with a survival-shaped command");
         helper.assertTrue(CacheActions.executeCreative(player, take, "", 0) == Result.OK && stock(player, 0) == 32
                 && player.containerMenu.getCarried().isEmpty(), "Creative withdrawal created another server-owned cursor");
-        helper.assertTrue(execute(player, Action.CONFIRM_TAKE, 0, 16, "") == Result.OK && stock(player, 0) == 16, "Creative take did not confirm");
         var packet = sent.stream().filter(p -> p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket)
                 .map(p -> (net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket)p).toList().getLast();
         helper.assertTrue(packet.getCarriedItem().is(Items.STONE) && packet.getCarriedItem().getCount() == 16,
@@ -318,7 +322,10 @@ public final class InteractionTests {
         var packet = new PanelPackets.Command(window, 1, take, false, "", 0);
         var reply = PanelNetwork.command(f.player(), packet);
         helper.assertTrue(reply.result() == Result.OK && reply.acknowledged() == 1 && stock(f.player(), 0) == 32, "Network action did not acknowledge its actual commit");
-        helper.assertTrue(execute(f.player(), Action.CONFIRM_TAKE, 0, 16, "") == Result.OK && stock(f.player(), 0) == 16, "Network take did not confirm");
+        // Settle the cursor preview by placing all 16 into the backpack and letting the panel validate.
+        f.player().getInventory().setItem(0, f.player().containerMenu.getCarried()); f.player().containerMenu.setCarried(ItemStack.EMPTY);
+        CacheActions.snapshot(f.player());
+        helper.assertTrue(stock(f.player(), 0) == 16, "Network take did not settle (expected S=16)");
         helper.assertTrue(PanelNetwork.command(f.player(), packet).result() == Result.STALE && stock(f.player(), 0) == 16, "Network replay consumed twice");
         f.player().tickCount += 4; UUID nextWindow = UUID.randomUUID();
         var next = PanelNetwork.query(f.player(), new PanelPackets.Query(nextWindow, f.player().containerMenu.containerId, true));
@@ -402,7 +409,9 @@ public final class InteractionTests {
         var result = PanelNetwork.command(f.player(), new PanelPackets.Command(windows.getFirst(), 1, take, false, "", 0));
         helper.assertTrue(result != null && result.result() == Result.OK && f.player().containerMenu.getCarried().getCount() == 1,
                 "A real command failed after the multi-player query load");
-        helper.assertTrue(execute(f.player(), Action.CONFIRM_TAKE, 0, 1, "") == Result.OK && f.record().state().cells().getFirst().amount() == 0, "Bounded consumption take did not confirm");
+        f.player().getInventory().setItem(0, f.player().containerMenu.getCarried()); f.player().containerMenu.setCarried(ItemStack.EMPTY);
+        CacheActions.snapshot(f.player());
+        helper.assertTrue(f.record().state().cells().getFirst().amount() == 0, "Bounded consumption take did not deduct");
         var delta = dev.scathiard.feedmepackages.network.MaterialHints.next(f.player());
         helper.assertTrue(delta != null && !delta.full() && delta.templates().isEmpty() && delta.amounts().getFirst() == 0,
                 "A single-player consumption did not produce its bounded count-only delta");
