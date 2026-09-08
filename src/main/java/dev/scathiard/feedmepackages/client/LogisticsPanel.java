@@ -324,18 +324,17 @@ public final class LogisticsPanel {
 
     private static void frame(GuiGraphics g, PanelLayout.Rect b) {
         int x = b.x(), y = b.y(), w = b.width(), h = b.height();
-        // Scathiard 9-slice panel: corners + tiled edges + middle loop (his art, replaces the old frame).
-        panelBlit(g, x, y, 22, 36, 18, 47, 22, 36);            // top-left corner
-        panelBlit(g, x + w - 22, y, 22, 36, 53, 47, 22, 36);   // top-right corner
-        panelBlit(g, x, y + h - 49, 22, 49, 18, 91, 22, 49);   // bottom-left corner
-        panelBlit(g, x + w - 14, y + h - 49, 14, 49, 53, 91, 14, 49); // bottom-right corner
-        int tx = x + 22, te = x + w - 22, ty = y, be = 0;
-        while (tx <= te) { panelBlit(g, tx, ty, te - tx + 1, 36, 44, 47, 1, 36); break; } // top border (1px strip)
-        panelBlit(g, x + 22, y + h - 49, w - 36, 49, 44, 91, 1, 49); // bottom border
-        panelBlit(g, x, y + 36, 14, 4, 26, 85, 14, 4);        // left border (sample)
-        panelBlit(g, x + w - 14, y + 36, 14, 4, 53, 85, 14, 4); // right border (sample)
-        panelBlit(g, x + 22, y + 36, w - 36, 4, 44, 85, 1, 4); // middle loop (sample)
-        // Interactive zones: cells, slider, return bar render above; text/title drawn by the renderer.
+        // Scathiard 9-slice panel: corners native, edges tiled from his short loop strips (0 scaling).
+        panelBlit(g, x, y, 22, Math.min(36, h), 18, 47, 22, 36);
+        panelBlit(g, x + w - 22, y, 22, Math.min(36, h), 53, 47, 22, 36);
+        panelBlit(g, x, y + h - Math.min(49, h), 22, Math.min(49, h), 18, 91, 22, 49);
+        panelBlit(g, x + w - 14, y + h - Math.min(49, h), 14, Math.min(49, h), 53, 91, 14, 49);
+        for (int tx = x + 22; tx < x + w - 22; tx += 1) panelBlit(g, tx, y, 1, Math.min(36, h), 44, 47, 1, 36);
+        for (int tx = x + 22; tx < x + w - 14; tx += 1) panelBlit(g, tx, y + h - Math.min(49, h), 1, Math.min(49, h), 44, 91, 1, 49);
+        for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4) panelBlit(g, x, ty, 14, 4, 26, 85, 14, 4);
+        for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4) panelBlit(g, x + w - 14, ty, 14, 4, 53, 85, 14, 4);
+        for (int tx = x + 14; tx < x + w - 14; tx += 32) for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4)
+            panelBlit(g, tx, ty, Math.min(32, x + w - 14 - tx), 4, 44, 85, 32, 4);
     }
     private static void button(GuiGraphics g, int x, int y, String label, String help) {
         boolean hover = new PanelLayout.Rect(x, y, 18, 18).contains(mouseX, mouseY);

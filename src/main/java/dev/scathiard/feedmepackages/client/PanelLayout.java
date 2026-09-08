@@ -4,7 +4,7 @@ import java.util.*;
 
 /** Pure geometry shared by drawing, mouse routing, JEI exclusion, and layout tests. */
 public record PanelLayout(Rect bounds, List<CellBox> cells, Rect slider, Rect returnBar, int firstRow, int visibleRows, int totalRows, int footerY, boolean compact) {
-    public static final int WIDTH = 46, ROW = 18, HEADER = 24, FOOTER = 6, SLIDER = 22, BAR = 22;
+    public static final int WIDTH = 46, ROW = 18, HEADER = 36, FOOTER = 6, SLIDER = 22, BAR = 49;
     public record Rect(int x, int y, int width, int height) {
         public boolean contains(double mx, double my) { return mx >= x && my >= y && mx < x + width && my < y + height; }
     }
