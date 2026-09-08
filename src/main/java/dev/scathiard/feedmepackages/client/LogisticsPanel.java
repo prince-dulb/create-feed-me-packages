@@ -287,8 +287,8 @@ public final class LogisticsPanel {
         while (midX + 3 <= midEnd) { panelBlit(g, midX, ty, 3, 5, 17, 1, 3, 5); midX += 3; }
         if (midX < midEnd) panelBlit(g, midX, ty, midEnd - midX, 5, 17, 1, 3, 5);
         panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
-        panelBlit(g, minAt - 3, y + 5, 7, 8, 0, 50, 7, 8);
-        panelBlit(g, maxAt - 3, y + 5, 7, 8, 0, 50, 7, 8);
+        panelBlit(g, minAt - 2, y + 5, 5, 9, 1, 49, 5, 9);
+        panelBlit(g, maxAt - 2, y + 5, 5, 9, 1, 49, 5, 9);
         // Fixed-edge labels: minimum on the left, maximum on the right (they can never overlap).
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(1f, 20f / MC.font.width(minLabel));
