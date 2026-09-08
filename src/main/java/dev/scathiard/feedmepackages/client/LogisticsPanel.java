@@ -333,8 +333,9 @@ public final class LogisticsPanel {
         for (int tx = x + 22; tx < x + w - 14; tx += 1) panelBlit(g, tx, y + h - Math.min(49, h), 1, Math.min(49, h), 44, 91, 1, 49);
         for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4) panelBlit(g, x, ty, 14, 4, 26, 85, 14, 4);
         for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4) panelBlit(g, x + w - 14, ty, 14, 4, 53, 85, 14, 4);
-        for (int tx = x + 14; tx < x + w - 14; tx += 32) for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 4)
-            panelBlit(g, tx, ty, Math.min(32, x + w - 14 - tx), 4, 44, 85, 32, 4);
+        for (int ty = y + 36; ty < y + h - Math.min(49, h); ty += 5)
+            for (int tx = x + 14; tx < x + w - 14; tx += 2)
+                panelBlit(g, tx, ty, Math.min(2, x + w - 14 - tx), Math.min(5, y + h - Math.min(49, h) - ty), 44, 85, 2, 5);
     }
     private static void button(GuiGraphics g, int x, int y, String label, String help) {
         boolean hover = new PanelLayout.Rect(x, y, 18, 18).contains(mouseX, mouseY);
