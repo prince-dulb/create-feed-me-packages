@@ -279,8 +279,9 @@ public final class LogisticsPanel {
         int minAt = thumbPx(x, w, minN, groupCap);
         int maxAt = thumbPx(x, w, maxN, groupCap);
         g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        // Scathiard-drawn slider: left cap + looping middle + right cap (1:1, no scaling) + golden knobs.
-        int tx = x + 2, ty = y + 7, trackW = w - 4;
+        // Scathiard-drawn slider: left cap + looping middle + right cap, spanning exactly the thumb
+        // range (width-10) so the track never runs past either endpoint.
+        int tx = x + 3, ty = y + 7, trackW = w - 10;
         panelBlit(g, tx, ty, 4, 5, 0, 1, 4, 5);
         int midX = tx + 4, midEnd = tx + trackW - 4;
         while (midX + 3 <= midEnd) { panelBlit(g, midX, ty, 3, 5, 17, 1, 3, 5); midX += 3; }
