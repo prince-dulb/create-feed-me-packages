@@ -231,6 +231,36 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T8b (Planner §5 / P-0090 §1 "分次放下"): real clicks, no setItem transfers. Take 8 (P=8, S=120),
+    // right-click 3 times (1 each) into inventory[0] -> S=117/P=5/backpack 3; left-click the rest 5
+    // -> S=112/P=0/backpack 8. Only real menu.clicked drives the settlement.
+    @GameTest(template = "empty")
+    public static void t8bRealClickPartialThenFullPlacement(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120
+        var player = f.player();
+        player.getInventory().setItem(0, ItemStack.EMPTY);
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8 && preview(f) == 8, "Preview take failed");
+        int menuSlot = -1;
+        for (int i = 0; i < player.containerMenu.slots.size(); i++) {
+            var slot = player.containerMenu.getSlot(i);
+            if (slot.container == player.getInventory() && slot.getContainerSlot() == 0) { menuSlot = i; break; }
+        }
+        helper.assertTrue(menuSlot >= 0, "Could not locate inventory[0] menu slot");
+        // Right-click 3 times, 1 each.
+        for (int i = 0; i < 3; i++) player.containerMenu.clicked(menuSlot, 1, net.minecraft.world.inventory.ClickType.PICKUP, player);
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 11, "After 3 single right-clicks S=" + stock(f) + " (expected 117)");
+        helper.assertTrue(preview(f) == 5, "After 3 single right-clicks P=" + preview(f) + " (expected 5)");
+        helper.assertTrue(player.getInventory().getItem(0).getCount() == 3, "After 3 single right-clicks backpack=" + player.getInventory().getItem(0).getCount() + " (expected 3)");
+        // Left-click the remaining 5.
+        player.containerMenu.clicked(menuSlot, 0, net.minecraft.world.inventory.ClickType.PICKUP, player);
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 16, "After left-click S=" + stock(f) + " (expected 112)");
+        helper.assertTrue(preview(f) == 0, "After left-click P=" + preview(f) + " (expected 0)");
+        helper.assertTrue(player.getInventory().getItem(0).getCount() == 8, "After left-click backpack=" + player.getInventory().getItem(0).getCount() + " (expected 8)");
+        helper.assertTrue(player.containerMenu.getCarried().isEmpty(), "Cursor not empty after full placement");
+        helper.succeed();
+    }
+
     // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
     @GameTest(template = "empty")
     public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
