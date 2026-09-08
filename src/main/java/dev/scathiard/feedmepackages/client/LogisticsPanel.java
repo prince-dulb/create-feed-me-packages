@@ -262,35 +262,28 @@ public final class LogisticsPanel {
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
         return sliderX + 3 + (value < 0 ? 0 : Math.max(1, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
     }
-    private static void sliderKnob(GuiGraphics g, int at, int y) {
-        // Create-style wooden knob: dark outline, wood body, light top-left bevel.
-        g.fill(at - 2, y, at + 3, y + 9, 0xFF6B4E2E);
-        g.fill(at - 1, y + 1, at + 2, y + 8, 0xFFA97C50);
-        g.fill(at - 1, y + 1, at + 1, y + 3, 0xFFC9A05E);
+    private static void drawNative(GuiGraphics g, AllGuiTextures texture, int x, int y, int w, float nativeW) {
+        // Render Create's own texture pixels at the panel width (native textures are 182-186px wide).
+        g.pose().pushPose(); g.pose().translate(x, y, 0); g.pose().scale(w / nativeW, 1f, 1f);
+        texture.render(g, 0, 0); g.pose().popPose();
     }
     private static void renderSlider(GuiGraphics g) {
         var r = layout.slider(); var cell = snapshot.cells().get(selected);
         int groupCap = snapshot.groupCapacity();
         int x = r.x(), y = r.y(), w = r.width();
-        // No disabled state: min=0 means "no supply", max=-1/-full means "no return" (full capacity).
+        // No disabled state: min=0 means "no supply", max=-1 shows as full capacity ("no return").
         int minN = draggingSlider ? draftMinimum : cell.minimum(); if (minN < 0) minN = 0;
         int maxN = draggingMaximum ? draftMaximum : cell.maximum(); if (maxN < 0) maxN = groupCap;
         int minAt = thumbPx(x, w, minN, groupCap);
         int maxAt = thumbPx(x, w, maxN, groupCap);
         g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        // Create-style value slider: a wooden frame over a colourful per-group notch scale.
-        g.fill(x - 1, y - 1, x + w + 1, y + 23, 0xFF2C2520);
-        g.fill(x, y, x + w, y + 22, 0xFF191411);
-        int tx = x + 3, tw = w - 6;
-        int[] palette = {0xFF3E7A56, 0xFF2E7E7E, 0xFF2E4E9E, 0xFF5E3E9E};
-        for (int i = 0; i < groupCap; i++) {
-            int sx = tx + i * tw / groupCap, sw = Math.max(1, tw / groupCap - 1);
-            boolean band = i >= minN && i < maxN;
-            g.fill(sx, y + 4, sx + sw, y + 9, band ? palette[i % palette.length] : 0xFF3A332C);
-        }
-        g.fill(tx + minN * tw / groupCap, y + 3, tx + (maxN > groupCap ? groupCap : maxN) * tw / groupCap, y + 10, 0x22C8B07E);
-        sliderKnob(g, minAt, y + 1);
-        sliderKnob(g, maxAt, y + 1);
+        // Create-native throttle slider composed from its real textures (no hand-drawn pixels).
+        g.fill(x - 1, y - 1, x + w + 1, y + 23, 0xFF28211B);
+        drawNative(g, AllGuiTextures.TRAIN_HUD_FRAME, x, y + 2, w, 186f);
+        drawNative(g, AllGuiTextures.TRAIN_HUD_SPEED_BG, x + 2, y + 4, w - 4, 182f);
+        drawNative(g, AllGuiTextures.TRAIN_HUD_SPEED, x + 2, y + 4, w - 4, 182f);
+        AllGuiTextures.TRAIN_HUD_THROTTLE_POINTER.render(g, minAt - 3, y + 1);
+        AllGuiTextures.TRAIN_HUD_THROTTLE_POINTER.render(g, maxAt - 3, y + 1);
         // Fixed-edge labels: minimum on the left, maximum on the right (they can never overlap).
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(1f, 20f / MC.font.width(minLabel));
