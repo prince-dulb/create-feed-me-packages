@@ -306,22 +306,18 @@ public final class LogisticsPanel {
     private static void renderReturnBar(GuiGraphics g) {
         var r = layout.returnBar();
         int x = r.x(), y = r.y(), w = r.width(), h = r.height();
-        // Scathiard-drawn 9-slice: the white input field = bottom-left block + tiled bottom border +
-        // bottom-right block (his art, at the item-slot proportion). Text is drawn on top with the font.
-        panelBlit(g, x, y, 22, Math.min(49, h), 18, 91, 22, 49);
-        int mx = x + 22, me = x + w - 14;
-        while (mx + 1 <= me) { panelBlit(g, mx, y, 1, Math.min(49, h), 44, 91, 1, 49); mx += 1; }
-        if (mx < me) panelBlit(g, mx, y, me - mx, Math.min(49, h), 44, 91, 1, 49);
-        panelBlit(g, me, y, 14, Math.min(49, h), 53, 91, 14, 49);
+        // Scathiard's reference composition: the white input field (with the golden curl) from his
+        // mockup, rendered at the bar's size. Text is drawn on top with the font.
+        panelBlit(g, x, y, w, h, 79, 138, 70, 24);
         String value = returnEditing ? returnBuffer : (snapshot.returnAddress() == null ? "" : snapshot.returnAddress());
         int textWidth = w - 12;
         boolean placeholder = value.isEmpty() && !returnEditing;
         String shown = placeholder ? tr("return_label").getString()
                 : MC.font.width(value) <= textWidth ? value : MC.font.plainSubstrByWidth(value, Math.max(0, textWidth - MC.font.width("…"))) + "…";
-        text(g, shown, x + 8, y + 3, placeholder ? 0xFF8A7E68 : (returnEditing ? 0xFF4A3B28 : 0xFF5E523F));
+        text(g, shown, x + 9, y + h / 2 - MC.font.lineHeight / 2, placeholder ? 0xFF8A7E68 : (returnEditing ? 0xFF4A3B28 : 0xFF5E523F));
         if (returnEditing) {
-            int caretX = x + 8 + MC.font.width(shown);
-            g.fill(caretX, y + 3, caretX + 1, y + 16, 0xFF4A3B28);
+            int caretX = x + 9 + MC.font.width(shown);
+            g.fill(caretX, y + 4, caretX + 1, y + h - 4, 0xFF4A3B28);
         }
         if (r.contains(mouseX, mouseY)) tooltip = List.of(tr(returnEditing ? "return_editing" : "return_hint"));
     }
