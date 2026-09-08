@@ -282,6 +282,31 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T13 (Planner §5 "创造专项", P-0090 §4 归因): creative preview + native placement through the
+    // creative packet must charge only the cache-own transfer, and an independent same-variant pickup
+    // from the creative list must NOT be mis-attributed to the cache withdrawal.
+    @GameTest(template = "empty")
+    public static void t13CreativeAttributionOnlyChargesCacheOwnTransfer(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        TestPlayers.nativePackets(player);
+        player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        // Creative preview take 1 stone (S stays 3, preview P=1).
+        var view = CacheActions.open(player);
+        var take = new CacheActions.Intent(view.session(), view.record().state().revision(), CacheActions.Action.TAKE_CURSOR, 0, 1, -1, "");
+        helper.assertTrue(CacheActions.executeCreative(player, take, "", 0) == CacheActions.Result.OK
+                && f.record().state().cells().getFirst().amount() == 3, "Creative preview take failed or wrongly deducted");
+        // Native creative placement to inventory[0] (CreativeModeInventoryScreen slot 36 = inv 9 on InventoryMenu;
+        // but the packet uses the inventory slot index; step through the native slot packet).
+        player.getInventory().setItem(0, ItemStack.EMPTY);
+        player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(36, new ItemStack(Items.STONE)));
+        // Close: only the 1 cache-own stone is charged (S=2), the placed one is in the backpack.
+        player.connection.handleContainerClose(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(0));
+        int stones = 0; for (int i = 0; i < 36; i++) if (player.getInventory().getItem(i).is(Items.STONE)) stones += player.getInventory().getItem(i).getCount();
+        helper.assertTrue(f.record().state().cells().getFirst().amount() == 2, "Creative placement over/under-charged (S=" + f.record().state().cells().getFirst().amount() + ", expected 2)");
+        helper.assertTrue(stones == 1, "Creative placement did not keep exactly 1 in the backpack (got " + stones + ")");
+        helper.succeed();
+    }
+
     // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
     @GameTest(template = "empty")
     public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
