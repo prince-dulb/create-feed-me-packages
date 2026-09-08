@@ -3,7 +3,9 @@ package dev.scathiard.feedmepackages.gametest;
 import dev.scathiard.feedmepackages.FeedMePackages;
 import dev.scathiard.feedmepackages.client.LogisticsPanel;
 import dev.scathiard.feedmepackages.client.PanelLayout;
+import dev.scathiard.feedmepackages.interaction.CursorReservations;
 import dev.scathiard.feedmepackages.item.ItemVariantKey;
+import dev.scathiard.feedmepackages.network.PanelPackets;
 import dev.scathiard.feedmepackages.registry.FmpRegistries;
 import dev.scathiard.feedmepackages.service.AccessGate;
 import dev.scathiard.feedmepackages.storage.CacheLedger;
@@ -89,22 +91,31 @@ public final class ClientReview {
                     var first = LogisticsPanel.visibleCells(mc.screen).getFirst().bounds(); click(first.x() + 8, first.y() + 8); advance();
                 }
                 case 5 -> {
-                    if (ticks - changed < 20) return;
+                    if (ticks - changed < 20 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
                     require(mc.player.containerMenu.getCarried().isEmpty(), "Survival deposit did not clear real cursor");
                     server(player -> require(stock(player) == 64, "Survival UI deposit did not reach server cache"));
-                    var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); capture("01-survival");
-                    click(bounds.x() + 12, bounds.y() + 34); advance();
+                    capture("01-survival");
+                    var first = LogisticsPanel.visibleCells(mc.screen).getFirst().bounds();
+                    click(first.x() + 8, first.y() + 8); advance();
                 }
                 case 6 -> {
-                    if (ticks - changed < 20) return;
+                    if (ticks - changed < 20 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
                     require(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 64, "Survival withdrawal lost cursor stack");
-                    server(player -> require(stock(player) == 0, "Survival UI withdrawal did not deduct cache"));
-                    var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); click(bounds.x() + 12, bounds.y() + 34); advance();
+                    server(player -> {
+                        require(stock(player) == 64, "Survival preview must not deduct cache before placement");
+                        require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 64, "Survival take must reserve the preview amount");
+                    });
+                    placeIntoBackpack(0); advance();
                 }
                 case 7 -> {
                     if (ticks - changed < 20) return;
+                    require(mc.player.containerMenu.getCarried().isEmpty(), "Survival placement did not clear the preview cursor");
                     server(player -> {
-                        require(stock(player) == 64, "Second deposit failed");
+                        require(stock(player) == 0, "Survival placement did not debit the cache");
+                        require(player.getInventory().countItem(Items.STONE) == 64, "Survival placement lost the withdrawn stack");
+                        require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "Survival placement left a dangling reservation");
+                    });
+                    server(player -> {
                         var handle = AccessGate.resolve(player).handle(); var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(handle.cacheId());
                         var edit = before.state().edit(); for (int level = 1; level < 5; level++) edit.upgrade(); edit.thresholds(0, 2, -1);
                         Item[] examples = {Items.IRON_INGOT, Items.COPPER_INGOT, Items.REDSTONE, Items.ANDESITE, Items.GLASS, Items.HOPPER, Items.RAIL, Items.OAK_PLANKS};
@@ -115,33 +126,35 @@ public final class ClientReview {
                     }); advance();
                 }
                 case 8 -> {
-                    if (ticks - changed < 25) return;
-                    var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); click(bounds.x() + 19, bounds.y() + 27); advance();
+                    if (ticks - changed < 25 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
+                    clickCellDot(0); advance();
                 }
                 case 9 -> {
-                    if (ticks - changed < 10) return;
+                    if (ticks - changed < 15 || panelLayout().slider() == null) return;
                     capture("02-expanded-level5");
-                    var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); click(bounds.x() + 20, bounds.y() + 46); advance();
+                    dragMinimumToMidpoint(0); advance();
                 }
                 case 10 -> {
-                    if (ticks - changed < 20) return;
+                    if (ticks - changed < 30) return;
                     server(player -> {
-                        var record = CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId());
-                        require(record.state().cells().getFirst().minimum() == 1024, "Slider intent did not reach server threshold");
+                        var cell = CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId()).state().cells().getFirst();
+                        require(cell.minimum() == 16 && cell.maximum() == -1, "Slider minimum must be 16 groups (16x64=1024), max -1");
+                        require(cell.amount() == 0, "Slider drag must not move items");
                         player.setGameMode(GameType.CREATIVE);
                     }); mc.setScreen(null); advance();
                 }
-                case 11 -> { if (ticks - changed < 10) return; mc.setScreen(new InventoryScreen(mc.player)); advance(); }
+                case 11 -> { if (ticks - changed < 10) return; mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get())); advance(); }
                 case 12 -> {
-                    if (ticks - changed < 25 || !(mc.screen instanceof CreativeModeInventoryScreen) || LogisticsPanel.exclusions(mc.screen).isEmpty()) return;
+                    if (ticks - changed < 25 || !(mc.screen instanceof CreativeModeInventoryScreen) || !LogisticsPanel.recipeReady() || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
                     mc.player.containerMenu.setCarried(new ItemStack(Items.STONE, 3));
-                    var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); click(bounds.x() + 12, bounds.y() + 34); advance();
+                    var cell = LogisticsPanel.visibleCells(mc.screen).stream().filter(c -> c.slot() == 0).findFirst().orElseThrow().bounds();
+                    click(cell.x() + 8, cell.y() + 8); advance();
                 }
                 case 13 -> {
                     if (ticks - changed < 20) return;
                     require(mc.player.containerMenu.getCarried().isEmpty(), "Creative full-state sync did not update cursor");
-                    server(player -> require(stock(player) == 67, "Creative UI deposit did not reach cache")); capture("03-creative");
-                    var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); click(bounds.x() + 12, bounds.y() + 34); advance();
+                    server(player -> require(stock(player) == 3, "Creative UI deposit must add 3 to cache")); capture("03-creative");
+                    advance();
                 }
                 case 14 -> {
                     if (ticks - changed < 20 || !reviewCreativePlacement()) return;
@@ -296,28 +309,28 @@ public final class ClientReview {
         var mc = Minecraft.getInstance();
         if (creativeStage != 0 && ticks - creativeChanged < 20) return false;
         switch (creativeStage) {
-            case 0 -> {
-                require(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 64, "Creative withdrawal cursor failed");
-                server(player -> require(stock(player) == 3 && player.containerMenu.getCarried().isEmpty(), "Creative handoff retained a second server cursor"));
-                creativeHotbarClick();
+            case 0 -> { // creative preview take from cell 0 (empty cursor, cell holds 3 stone)
+                require(mc.player.containerMenu.getCarried().isEmpty(), "Creative start cursor must be empty");
+                clickCellBody(0);
             }
-            case 1 -> {
-                require(mc.player.containerMenu.getCarried().isEmpty() && mc.player.getInventory().getItem(0).getCount() == 64, "Native creative placement failed");
-                mc.player.closeContainer();
+            case 1 -> { // preview: cursor holds 3, cache unchanged, reserved 3
+                require(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 3, "Creative preview got wrong cursor amount");
+                server(player -> {
+                    require(stock(player) == 3, "Creative preview must not deduct cache");
+                    require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 3, "Creative preview must reserve 3");
+                });
+                mc.player.closeContainer(); // cancel-timing: close with unplaced preview
             }
-            case 2 -> {
-                server(player -> require(player.getInventory().items.stream().filter(s -> s.is(Items.STONE)).mapToInt(ItemStack::getCount).sum() == 64
-                        && stock(player) == 3 && player.containerMenu.getCarried().isEmpty(), "Creative close duplicated or lost the actual withdrawal"));
-                mc.setScreen(new InventoryScreen(mc.player));
+            case 2 -> { // cancel must not deduct; reservation cleared
+                server(player -> {
+                    require(stock(player) == 3, "Creative cancel must not deduct cache");
+                    require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "Creative cancel must clear reservation");
+                });
+                mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
             }
             case 3 -> {
-                require(mc.screen instanceof CreativeModeInventoryScreen && mc.player.containerMenu.getCarried().isEmpty()
-                        && mc.player.getInventory().getItem(0).getCount() == 64, "Creative reopening changed native inventory ownership");
-                creativeHotbarClick();
-            }
-            case 4 -> {
-                require(mc.player.containerMenu.getCarried().getCount() == 64 && mc.player.getInventory().getItem(0).isEmpty(), "Native creative pickup failed");
-                var bounds = LogisticsPanel.exclusions(mc.screen).getFirst(); click(bounds.x() + 12, bounds.y() + 34);
+                require(mc.screen instanceof CreativeModeInventoryScreen, "Creative reopen did not restore the creative screen");
+                mc.player.containerMenu.setCarried(ItemStack.EMPTY); // creative cursor persists client-side; clear for the next scenario
                 return true;
             }
             default -> throw new IllegalStateException("Unexpected creative review stage");
@@ -327,6 +340,15 @@ public final class ClientReview {
     private static void creativeHotbarClick() {
         var mc = Minecraft.getInstance(); var screen = (CreativeModeInventoryScreen)mc.screen;
         var slot = screen.getMenu().slots.stream().filter(s -> s.container == mc.player.getInventory() && s.getContainerSlot() == 0).findFirst().orElseThrow();
+        click(screen.getGuiLeft() + slot.x + 8, screen.getGuiTop() + slot.y + 8);
+    }
+    /** Real native click that drops the held cursor stack into a backpack slot; settles the t50 reservation. */
+    private static void placeIntoBackpack(int containerSlot) {
+        var mc = Minecraft.getInstance();
+        var screen = (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) mc.screen;
+        var slot = screen.getMenu().slots.stream()
+                .filter(s -> s.container == mc.player.getInventory() && s.getContainerSlot() == containerSlot)
+                .findFirst().orElseThrow();
         click(screen.getGuiLeft() + slot.x + 8, screen.getGuiTop() + slot.y + 8);
     }
     private static int layoutStage, layoutIndex, layoutChanged;
@@ -489,6 +511,52 @@ public final class ClientReview {
         if (!press.isCanceled()) screen.mouseClicked(x, y, 0);
         var release = new ScreenEvent.MouseButtonReleased.Pre(screen, x, y, 0); NeoForge.EVENT_BUS.post(release);
         if (!release.isCanceled()) screen.mouseReleased(x, y, 0);
+    }
+    /** Panel geometry + client snapshot from reflection, matching the driver's other helpers. */
+    private static PanelLayout panelLayout() {
+        try { var f = LogisticsPanel.class.getDeclaredField("layout"); f.setAccessible(true); return (PanelLayout) f.get(null); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+    private static PanelPackets.Snapshot panelSnapshot() {
+        try { var f = LogisticsPanel.class.getDeclaredField("snapshot"); f.setAccessible(true); return (PanelPackets.Snapshot) f.get(null); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+    private static net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?> panelScreen() {
+        return (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) Minecraft.getInstance().screen;
+    }
+    /** A held-button press that the panel's own Pre listener routes (cancels the native click when it owns the region). */
+    private static void panelPress(double x, double y) {
+        var screen = Minecraft.getInstance().screen;
+        var press = new ScreenEvent.MouseButtonPressed.Pre(screen, x, y, 0); NeoForge.EVENT_BUS.post(press);
+        if (!press.isCanceled()) screen.mouseClicked(x, y, 0);
+    }
+    private static void panelDrag(double x, double y) {
+        var drag = new ScreenEvent.MouseDragged.Pre(Minecraft.getInstance().screen, x, y, 0, 0, 0); NeoForge.EVENT_BUS.post(drag);
+    }
+    private static void panelRelease(double x, double y) {
+        var screen = Minecraft.getInstance().screen;
+        var release = new ScreenEvent.MouseButtonReleased.Pre(screen, x, y, 0); NeoForge.EVENT_BUS.post(release);
+        if (!release.isCanceled()) screen.mouseReleased(x, y, 0);
+    }
+    /** Select a cache cell by its dot so its threshold slider opens, using the real panel event. */
+    private static void clickCellDot(int slot) {
+        var target = LogisticsPanel.visibleCells(Minecraft.getInstance().screen).stream().filter(c -> c.slot() == slot).findFirst().orElseThrow();
+        var d = target.dot(); click(d.x() + 1, d.y() + 2);
+    }
+    /** Click a cache cell's body (not its dot) so an empty cursor does a TAKE_CURSOR and a held one a DEPOSIT. */
+    private static void clickCellBody(int slot) {
+        var bounds = LogisticsPanel.visibleCells(Minecraft.getInstance().screen).stream().filter(c -> c.slot() == slot).findFirst().orElseThrow().bounds();
+        click(bounds.x() + 8, bounds.y() + 8);
+    }
+    /** Press the open cell slider's minimum handle and drag it to the track midpoint (value 16 groups at cap 32). */
+    private static void dragMinimumToMidpoint(int slot) {
+        var slider = panelLayout().slider(); if (slider == null) throw new IllegalStateException("Slider did not open for cell " + slot);
+        int groupCap = panelSnapshot().groupCapacity();
+        int minimum = Math.max(0, panelSnapshot().cells().get(slot).minimum());
+        int minAt = slider.x() + PanelLayout.TRACK_INSET + (minimum * (slider.width() - 2 * PanelLayout.TRACK_INSET) / Math.max(1, groupCap));
+        int bandY = slider.y() + PanelLayout.MIN_THUMB_Y + 2;
+        int targetX = slider.x() + PanelLayout.TRACK_INSET + (slider.width() - 2 * PanelLayout.TRACK_INSET) / 2;
+        panelPress(minAt, bandY); panelDrag(targetX, bandY); panelRelease(targetX, bandY);
     }
     static void capture(String name) {
         var mc = Minecraft.getInstance(); Screenshot.grab(mc.gameDirectory, "fmp-" + RUN + "-" + name + ".png", mc.getMainRenderTarget(),
