@@ -261,6 +261,27 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T7 (Planner §5 "混合来源"): a cursor stack holding MORE than the preview count has a real
+    // component beyond the reserved alias. Returning it must release only the preview (S unchanged
+    // for that part) and insert only the real excess — never attach the whole stack to the preview.
+    @GameTest(template = "empty")
+    public static void t7MixedRealAndPreviewReturnSplitsCorrectly(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120 stones
+        var player = f.player();
+        player.getInventory().setItem(0, ItemStack.EMPTY);
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8 && preview(f) == 8, "Preview take failed");
+        // The cursor now holds 8 (preview) + 2 real stones the player placed from elsewhere = 10.
+        player.containerMenu.setCarried(new ItemStack(Items.STONE, 10));
+        helper.assertTrue(exec(f, CacheActions.Action.DEPOSIT, 0, 0) == CacheActions.Result.OK,
+                "Mixed return was rejected");
+        // Only the real excess (2) is inserted; the preview (8) is released, S stays 120.
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 8 + 2, "Mixed return net wrong: S=" + stock(f) + " (expected 122)");
+        helper.assertTrue(preview(f) == 0, "Mixed return left a preview");
+        helper.assertTrue(player.containerMenu.getCarried().isEmpty(), "Mixed return did not clear the cursor");
+        helper.succeed();
+    }
+
     // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
     @GameTest(template = "empty")
     public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
