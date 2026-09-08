@@ -263,9 +263,18 @@ public final class LogisticsPanel {
         return sliderX + 3 + (value < 0 ? 0 : Math.max(1, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
     }
     private static void drawNative(GuiGraphics g, AllGuiTextures texture, int x, int y, int w, float nativeW) {
-        // Render Create's own texture pixels at the panel width (native textures are 182-186px wide).
+        // Render Create's own texture pixels flattened to the panel width (uniform patterns only —
+        // never the textured end caps, which would smear when scaled).
         g.pose().pushPose(); g.pose().translate(x, y, 0); g.pose().scale(w / nativeW, 1f, 1f);
         texture.render(g, 0, 0); g.pose().popPose();
+    }
+    private static void drawValueCursor(GuiGraphics g, int at, int y) {
+        // Create's value-settings knob (left cap + body + right cap), scaled into a compact golden thumb.
+        g.pose().pushPose(); g.pose().translate(at, y, 0); g.pose().scale(14f / 62f, 8f / 14f, 1f);
+        AllGuiTextures.VALUE_SETTINGS_CURSOR_LEFT.render(g, 0, 0);
+        AllGuiTextures.VALUE_SETTINGS_CURSOR.render(g, 3, 0);
+        AllGuiTextures.VALUE_SETTINGS_CURSOR_RIGHT.render(g, 59, 0);
+        g.pose().popPose();
     }
     private static void renderSlider(GuiGraphics g) {
         var r = layout.slider(); var cell = snapshot.cells().get(selected);
@@ -277,21 +286,25 @@ public final class LogisticsPanel {
         int minAt = thumbPx(x, w, minN, groupCap);
         int maxAt = thumbPx(x, w, maxN, groupCap);
         g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        // Create-native throttle slider composed from its real textures (no hand-drawn pixels).
-        g.fill(x - 1, y - 1, x + w + 1, y + 23, 0xFF28211B);
-        drawNative(g, AllGuiTextures.TRAIN_HUD_FRAME, x, y + 2, w, 186f);
-        drawNative(g, AllGuiTextures.TRAIN_HUD_SPEED_BG, x + 2, y + 4, w - 4, 182f);
-        drawNative(g, AllGuiTextures.TRAIN_HUD_SPEED, x + 2, y + 4, w - 4, 182f);
-        AllGuiTextures.TRAIN_HUD_THROTTLE_POINTER.render(g, minAt - 3, y + 1);
-        AllGuiTextures.TRAIN_HUD_THROTTLE_POINTER.render(g, maxAt - 3, y + 1);
+        // Create's value-settings slider composed from its real textures: brass corners native, the
+        // top/bottom frame strips and the dark ticked track flattened to the narrow panel width.
+        AllGuiTextures.BRASS_FRAME_TL.render(g, x, y);
+        AllGuiTextures.BRASS_FRAME_TR.render(g, x + w - 4, y);
+        AllGuiTextures.BRASS_FRAME_BL.render(g, x, y + 18);
+        AllGuiTextures.BRASS_FRAME_BR.render(g, x + w - 4, y + 18);
+        drawNative(g, AllGuiTextures.BRASS_FRAME_TOP, x + 4, y, w - 8, 256f);
+        drawNative(g, AllGuiTextures.BRASS_FRAME_BOTTOM, x + 4, y + 18, w - 8, 256f);
+        drawNative(g, AllGuiTextures.VALUE_SETTINGS_BAR, x + 8, y + 5, w - 16, 249f);
+        drawValueCursor(g, minAt - 7, y + 3);
+        drawValueCursor(g, maxAt - 7, y + 3);
         // Fixed-edge labels: minimum on the left, maximum on the right (they can never overlap).
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(1f, 20f / MC.font.width(minLabel));
-        g.pose().pushPose(); g.pose().translate(x + 3, y + 13, 190); g.pose().scale(s1, s1, 1);
+        g.pose().pushPose(); g.pose().translate(x + 3, y + 12, 190); g.pose().scale(s1, s1, 1);
         g.drawString(MC.font, minLabel, 0, 0, 0xFFE5D8B6, false); g.pose().popPose();
         String maxLabel = String.valueOf(maxN * cell.stackSize());
         float s2 = Math.min(1f, 20f / MC.font.width(maxLabel));
-        g.pose().pushPose(); g.pose().translate(x + w - 3 - MC.font.width(maxLabel) * s2, y + 13, 190); g.pose().scale(s2, s2, 1);
+        g.pose().pushPose(); g.pose().translate(x + w - 3 - MC.font.width(maxLabel) * s2, y + 12, 190); g.pose().scale(s2, s2, 1);
         g.drawString(MC.font, maxLabel, 0, 0, 0xFFE0955A, false); g.pose().popPose();
         if (r.contains(mouseX, mouseY)) {
             if (mouseY < y + 10) tooltip = List.of(tr(mouseX <= minAt ? "minimum_help" : "maximum_help"));
