@@ -813,7 +813,8 @@ public final class LogisticsPanel {
         }
         int groupCap = snapshot.groupCapacity();
         double relative = x - (double)layout.slider().x() - 3.0;
-        if (relative >= (double)(layout.slider().width() - 13)) {
+        // "No return" only at the true far right, beyond the full-capacity position (width-10).
+        if (relative >= (double)(layout.slider().width() - 9)) {
             draftMaximum = -1;
             return;
         }
