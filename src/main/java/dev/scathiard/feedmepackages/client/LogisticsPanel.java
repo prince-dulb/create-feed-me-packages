@@ -675,13 +675,15 @@ public final class LogisticsPanel {
             PanelPackets.CellView cell = snapshot.cells().get(selected);
             int minAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.minimum() < 0 ? 0 : cell.minimum(), groupCap);
             int maxAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.maximum() < 0 ? groupCap : cell.maximum(), groupCap);
-            if (y < slider.y() + slider.height() / 2) {
-                // Upper half = right endpoint (triangle above the track); lower half = left endpoint.
+            // Hitboxes hug the triangles: upper band = right endpoint, lower band = left endpoint.
+            if (y >= slider.y() + 9 && y <= slider.y() + 18 && Math.abs(x - minAt) <= 3) {
+                draggingSlider = true;
+                LogisticsPanel.setDraft(x);
+            } else if (y >= slider.y() + 1 && y <= slider.y() + 10 && Math.abs(x - maxAt) <= 3) {
                 draggingMaximum = true;
                 LogisticsPanel.setDraftMaximum(x);
             } else {
-                draggingSlider = true;
-                LogisticsPanel.setDraft(x);
+                return true;
             }
             return true;
         }
