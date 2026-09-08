@@ -262,31 +262,43 @@ public final class LogisticsPanel {
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
         return sliderX + 3 + (value < 0 ? 0 : Math.max(1, Math.min(groupCap, value) * (width - 10) / Math.max(1, groupCap)));
     }
+    private static void sliderKnob(GuiGraphics g, int at, int y) {
+        // Create-style wooden knob: dark outline, wood body, light top-left bevel.
+        g.fill(at - 2, y, at + 3, y + 9, 0xFF6B4E2E);
+        g.fill(at - 1, y + 1, at + 2, y + 8, 0xFFA97C50);
+        g.fill(at - 1, y + 1, at + 1, y + 3, 0xFFC9A05E);
+    }
     private static void renderSlider(GuiGraphics g) {
         var r = layout.slider(); var cell = snapshot.cells().get(selected);
         int groupCap = snapshot.groupCapacity();
         int x = r.x(), y = r.y(), w = r.width();
-        // No disabled state: min=0 means "no supply", max=groupCap means "no return" (full capacity).
+        // No disabled state: min=0 means "no supply", max=-1/-full means "no return" (full capacity).
         int minN = draggingSlider ? draftMinimum : cell.minimum(); if (minN < 0) minN = 0;
         int maxN = draggingMaximum ? draftMaximum : cell.maximum(); if (maxN < 0) maxN = groupCap;
-        // Overlay layer: the slider floats above the cells it covers (z lifts past item icons at ~200).
-        g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        g.fill(x - 1, y - 1, x + w + 1, y + 23, 0xFF262B26);
-        g.fill(x, y, x + w, y + 22, 0xFF393C36);
-        g.fill(x + 3, y + 4, x + w - 3, y + 6, 0xFF242723);
         int minAt = thumbPx(x, w, minN, groupCap);
         int maxAt = thumbPx(x, w, maxN, groupCap);
-        // acceptable stock band between the supply minimum and the return maximum
-        g.fill(Math.min(minAt, maxAt), y + 4, Math.max(minAt, maxAt) + 1, y + 6, 0xFFB4A36B);
-        overlay(g, minAt - 1, y + 1, 3, 8, 0xFFE5C57D);
-        overlay(g, maxAt - 1, y + 1, 3, 8, 0xFFE0955A);
+        g.pose().pushPose(); g.pose().translate(0, 0, 250);
+        // Create-style value slider: a wooden frame over a colourful per-group notch scale.
+        g.fill(x - 1, y - 1, x + w + 1, y + 23, 0xFF2C2520);
+        g.fill(x, y, x + w, y + 22, 0xFF191411);
+        int tx = x + 3, tw = w - 6;
+        int[] palette = {0xFF3E7A56, 0xFF2E7E7E, 0xFF2E4E9E, 0xFF5E3E9E};
+        for (int i = 0; i < groupCap; i++) {
+            int sx = tx + i * tw / groupCap, sw = Math.max(1, tw / groupCap - 1);
+            boolean band = i >= minN && i < maxN;
+            g.fill(sx, y + 4, sx + sw, y + 9, band ? palette[i % palette.length] : 0xFF3A332C);
+        }
+        g.fill(tx + minN * tw / groupCap, y + 3, tx + (maxN > groupCap ? groupCap : maxN) * tw / groupCap, y + 10, 0x22C8B07E);
+        sliderKnob(g, minAt, y + 1);
+        sliderKnob(g, maxAt, y + 1);
+        // Fixed-edge labels: minimum on the left, maximum on the right (they can never overlap).
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(1f, 20f / MC.font.width(minLabel));
-        g.pose().pushPose(); g.pose().translate(minAt - MC.font.width(minLabel) * s1 / 2, y + 12, 190); g.pose().scale(s1, s1, 1);
+        g.pose().pushPose(); g.pose().translate(x + 3, y + 13, 190); g.pose().scale(s1, s1, 1);
         g.drawString(MC.font, minLabel, 0, 0, 0xFFE5D8B6, false); g.pose().popPose();
         String maxLabel = String.valueOf(maxN * cell.stackSize());
         float s2 = Math.min(1f, 20f / MC.font.width(maxLabel));
-        g.pose().pushPose(); g.pose().translate(maxAt - MC.font.width(maxLabel) * s2 / 2, y + 13, 190); g.pose().scale(s2, s2, 1);
+        g.pose().pushPose(); g.pose().translate(x + w - 3 - MC.font.width(maxLabel) * s2, y + 13, 190); g.pose().scale(s2, s2, 1);
         g.drawString(MC.font, maxLabel, 0, 0, 0xFFE0955A, false); g.pose().popPose();
         if (r.contains(mouseX, mouseY)) {
             if (mouseY < y + 10) tooltip = List.of(tr(mouseX <= minAt ? "minimum_help" : "maximum_help"));
