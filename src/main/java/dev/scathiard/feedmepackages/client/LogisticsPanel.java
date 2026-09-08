@@ -279,8 +279,13 @@ public final class LogisticsPanel {
         int minAt = thumbPx(x, w, minN, groupCap);
         int maxAt = thumbPx(x, w, maxN, groupCap);
         g.pose().pushPose(); g.pose().translate(0, 0, 250);
-        // User-drawn slider: dark track bar (256x5, full-width region) + golden knobs (7x8) at both ends.
-        panelBlit(g, x + 2, y + 7, w - 4, 5, 0, 2, 256, 5);
+        // Scathiard-drawn slider: left cap + looping middle + right cap (1:1, no scaling) + golden knobs.
+        int tx = x + 2, ty = y + 7, trackW = w - 4;
+        panelBlit(g, tx, ty, 4, 5, 0, 1, 4, 5);
+        int midX = tx + 4, midEnd = tx + trackW - 4;
+        while (midX + 3 <= midEnd) { panelBlit(g, midX, ty, 3, 5, 17, 1, 3, 5); midX += 3; }
+        if (midX < midEnd) panelBlit(g, midX, ty, midEnd - midX, 5, 17, 1, 3, 5);
+        panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
         panelBlit(g, minAt - 3, y + 5, 7, 8, 0, 50, 7, 8);
         panelBlit(g, maxAt - 3, y + 5, 7, 8, 0, 50, 7, 8);
         // Fixed-edge labels: minimum on the left, maximum on the right (they can never overlap).
