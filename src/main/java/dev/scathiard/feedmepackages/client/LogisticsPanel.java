@@ -324,12 +324,18 @@ public final class LogisticsPanel {
 
     private static void frame(GuiGraphics g, PanelLayout.Rect b) {
         int x = b.x(), y = b.y(), w = b.width(), h = b.height();
-        g.fill(x, y, x + w, y + h, 0xFF242521); g.fill(x + 1, y + 1, x + w - 1, y + h - 1, 0xFF939487);
-        g.fill(x + 2, y + 2, x + w - 2, y + h - 2, 0xFF55594F); g.fill(x + 3, y + PanelLayout.HEADER, x + w - 3, y + h - PanelLayout.FOOTER, 0xFF41453F);
-        AllGuiTextures.STOCK_KEEPER_REQUEST_BANNER_L.render(g, x + 2, y + 3);
-        for (int i = x + 10; i < x + w - 10; i++) AllGuiTextures.STOCK_KEEPER_REQUEST_BANNER_M.render(g, i, y + 3);
-        AllGuiTextures.STOCK_KEEPER_REQUEST_BANNER_R.render(g, x + w - 10, y + 3);
-        for (int dx : new int[]{2, w - 5}) for (int dy : new int[]{2, h - 5}) { g.fill(x + dx, y + dy, x + dx + 3, y + dy + 3, 0xFF262B26); g.fill(x + dx, y + dy, x + dx + 2, y + dy + 1, 0xFFB6B2A0); }
+        // Scathiard 9-slice panel: corners + tiled edges + middle loop (his art, replaces the old frame).
+        panelBlit(g, x, y, 22, 36, 18, 47, 22, 36);            // top-left corner
+        panelBlit(g, x + w - 22, y, 22, 36, 53, 47, 22, 36);   // top-right corner
+        panelBlit(g, x, y + h - 49, 22, 49, 18, 91, 22, 49);   // bottom-left corner
+        panelBlit(g, x + w - 14, y + h - 49, 14, 49, 53, 91, 14, 49); // bottom-right corner
+        int tx = x + 22, te = x + w - 22, ty = y, be = 0;
+        while (tx <= te) { panelBlit(g, tx, ty, te - tx + 1, 36, 44, 47, 1, 36); break; } // top border (1px strip)
+        panelBlit(g, x + 22, y + h - 49, w - 36, 49, 44, 91, 1, 49); // bottom border
+        panelBlit(g, x, y + 36, 14, 4, 26, 85, 14, 4);        // left border (sample)
+        panelBlit(g, x + w - 14, y + 36, 14, 4, 53, 85, 14, 4); // right border (sample)
+        panelBlit(g, x + 22, y + 36, w - 36, 4, 44, 85, 1, 4); // middle loop (sample)
+        // Interactive zones: cells, slider, return bar render above; text/title drawn by the renderer.
     }
     private static void button(GuiGraphics g, int x, int y, String label, String help) {
         boolean hover = new PanelLayout.Rect(x, y, 18, 18).contains(mouseX, mouseY);
