@@ -67,6 +67,7 @@ public final class LogisticsPanel {
     private static boolean draggingMaximum;
     private static int capturedButton;
     private static boolean returnEditing;
+    private static int confirmSlot = -1;
     private static String returnBuffer;
     private static int draftMaximum;
     private static Component feedback;
@@ -218,6 +219,17 @@ public final class LogisticsPanel {
             lastQuery = tick;
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, true), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
+        // Take-reserve: once the taken stack leaves the cursor (placed elsewhere), confirm the take.
+        if (confirmSlot >= 0 && snapshot != null && active() && confirmSlot < snapshot.cells().size()) {
+            var cell = snapshot.cells().get(confirmSlot);
+            var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
+            if (cell.reserved() > 0 && !carried.isEmpty()) {
+                try {
+                    boolean same = ItemVariantKey.of(carried, LogisticsPanel.MC.player.registryAccess()).encoded().equals(cell.template());
+                    if (!same) { send(CacheActions.Action.CONFIRM_TAKE, confirmSlot, cell.reserved(), -1, ""); confirmSlot = -1; }
+                } catch (IllegalArgumentException invalid) { send(CacheActions.Action.CONFIRM_TAKE, confirmSlot, cell.reserved(), -1, ""); confirmSlot = -1; }
+            } else if (cell.reserved() <= 0) confirmSlot = -1;
+        }
     }
 
     public static void mount(AbstractContainerScreen<?> value) {
@@ -237,6 +249,10 @@ public final class LogisticsPanel {
     }
 
     private static void close() {
+        // Menu close with residual taken items settles as "placed": confirm any pending take first.
+        if (confirmSlot >= 0 && snapshot != null && confirmSlot < snapshot.cells().size() && snapshot.cells().get(confirmSlot).reserved() > 0)
+            send(CacheActions.Action.CONFIRM_TAKE, confirmSlot, snapshot.cells().get(confirmSlot).reserved(), -1, "");
+        confirmSlot = -1;
         if (window != null && MC.getConnection() != null && LogisticsPanel.MC.player != null) {
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, false), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
@@ -702,6 +718,8 @@ public final class LogisticsPanel {
             } else {
                 ItemStack item = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
                 LogisticsPanel.send(Screen.hasShiftDown() ? CacheActions.Action.TAKE_INVENTORY : CacheActions.Action.TAKE_CURSOR, box.slot(), button == 1 ? 1 : item.getMaxStackSize(), -1, "");
+                // Track the take so the panel can confirm it once the stack leaves the cursor.
+                if (Screen.hasShiftDown()) confirmSlot = -1; else confirmSlot = box.slot();
             }
             return true;
         }

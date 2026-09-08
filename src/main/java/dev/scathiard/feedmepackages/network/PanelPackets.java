@@ -45,7 +45,7 @@ public final class PanelPackets {
         });
         @Override public Type<Command> type() { return TYPE; }
     }
-    public record CellView(String template, int amount, int minimum, int maximum, int pending, int stackSize, boolean residual) {}
+    public record CellView(String template, int amount, int minimum, int maximum, int pending, int reserved, int stackSize, boolean residual) {}
     public record TerminalView(int slot, boolean personal, boolean disabled, String network) {}
     public record Snapshot(UUID window, UUID session, long serial, int acknowledged, CacheActions.Result result,
                            AccessGate.Status status, long revision, int level, int capacity, boolean personal,
@@ -67,7 +67,7 @@ public final class PanelPackets {
         b.writeVarInt(s.level); b.writeVarInt(s.capacity); b.writeBoolean(s.personal); b.writeBoolean(s.cacheFirst); b.writeBoolean(s.bound);
         text(b, s.address, 128); text(b, s.returnAddress, 128); text(b, s.residualItem, 256); b.writeVarInt(s.cells.size());
         for (var c : s.cells) {
-            text(b, c.template, 1024); b.writeVarInt(c.amount); b.writeVarInt(c.minimum); b.writeVarInt(c.maximum); b.writeVarInt(c.pending); b.writeVarInt(c.stackSize); b.writeBoolean(c.residual);
+            text(b, c.template, 1024); b.writeVarInt(c.amount); b.writeVarInt(c.minimum); b.writeVarInt(c.maximum); b.writeVarInt(c.pending); b.writeVarInt(c.reserved); b.writeVarInt(c.stackSize); b.writeBoolean(c.residual);
         }
         b.writeVarInt(s.terminals.size());
         for (var t : s.terminals) { b.writeVarInt(t.slot); b.writeBoolean(t.personal); b.writeBoolean(t.disabled); text(b, t.network, 36); }
@@ -79,7 +79,7 @@ public final class PanelPackets {
         var status = b.readEnum(AccessGate.Status.class); long revision = b.readLong();
         int level = b.readVarInt(), capacity = b.readVarInt(); boolean personal = b.readBoolean(), cacheFirst = b.readBoolean(), bound = b.readBoolean();
         String address = text(b, 128), returnAddress = text(b, 128), residual = text(b, 256); int size = size(b, 36); List<CellView> cells = new ArrayList<>(size);
-        for (int i = 0; i < size; i++) cells.add(new CellView(text(b, 1024), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readBoolean()));
+        for (int i = 0; i < size; i++) cells.add(new CellView(text(b, 1024), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readVarInt(), b.readBoolean()));
         size = size(b, MAX_TERMINALS); List<TerminalView> terminals = new ArrayList<>(size);
         for (int i = 0; i < size; i++) terminals.add(new TerminalView(b.readVarInt(), b.readBoolean(), b.readBoolean(), text(b, 36)));
         end(b); return new Snapshot(window, session, serial, ack, result, status, revision, level, capacity, personal, cacheFirst, bound, address, returnAddress, residual, cells, terminals);
