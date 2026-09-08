@@ -185,6 +185,25 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T2 (Planner §5 "满缓存与单件归还"): at full cache (S=128), take 8 as preview (P=8), right-click
+    // return 1 (P=7), then return the rest (P=0). S stays FULL throughout — returning a reserved
+    // item only releases the preview, never re-inserts stock.
+    @GameTest(template = "empty")
+    public static void t2FullCacheReturnsReservedOneByOne(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL); // S=128 (full)
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && f.player().containerMenu.getCarried().getCount() == 8 && stock(f) == ReceiveTests.FULL, "Preview take failed");
+        // Right-click returns exactly 1 (first=1): P drops 8->7, S unchanged.
+        helper.assertTrue(exec(f, CacheActions.Action.DEPOSIT, 0, 1) == CacheActions.Result.OK
+                && preview(f) == 7 && f.player().containerMenu.getCarried().getCount() == 7 && stock(f) == ReceiveTests.FULL,
+                "Single return did not drop preview to 7 with stock unchanged");
+        // Left-click (first=0) returns the rest: P 7->0, S unchanged.
+        helper.assertTrue(exec(f, CacheActions.Action.DEPOSIT, 0, 0) == CacheActions.Result.OK
+                && preview(f) == 0 && f.player().containerMenu.getCarried().isEmpty() && stock(f) == ReceiveTests.FULL,
+                "Full return did not clear preview with stock unchanged");
+        helper.succeed();
+    }
+
     // T6 (Planner §5 "并行消费"): with S=120, a cursor preview P and a crafting reservation C of the
     @GameTest(template = "empty")
     public static void t6ParallelConsumersSeeExactlySMinusPMinusC(GameTestHelper helper) {
