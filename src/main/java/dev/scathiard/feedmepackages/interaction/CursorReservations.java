@@ -41,21 +41,22 @@ public final class CursorReservations {
         final ItemStack prototype;
         final boolean creative;
         final UUID panelSession;
+        final int requestSeq;
         int amount;
         boolean clicking;
         int clickBefore;
-        Hold(ServerPlayer player, CacheHandle handle, int slot, ItemVariantKey variant, ItemStack prototype, int amount, boolean creative, UUID panelSession) {
+        Hold(ServerPlayer player, CacheHandle handle, int slot, ItemVariantKey variant, ItemStack prototype, int amount, boolean creative, UUID panelSession, int requestSeq) {
             this.menu = new WeakReference<>(player.containerMenu);
             this.handle = handle; this.slot = slot; this.variant = variant;
             this.prototype = prototype.copyWithCount(1); this.amount = amount; this.creative = creative;
-            this.panelSession = panelSession;
+            this.panelSession = panelSession; this.requestSeq = requestSeq;
         }
     }
     private CursorReservations() {}
 
     /** Called only AFTER CacheActions' session, identity, revision and slot validation. */
     public static CacheActions.Result action(ServerPlayer player, CacheHandle handle, int slot,
-            CacheActions.Intent intent, ItemStack creativeCursor) {
+            CacheActions.Intent intent, ItemStack creativeCursor, int requestSeq) {
         Hold hold = HOLDS.get(player);
         ItemStack carried = creativeCursor == null ? player.containerMenu.getCarried() : creativeCursor;
         if (hold != null && intent.action() == CacheActions.Action.DEPOSIT) {
@@ -76,7 +77,7 @@ public final class CursorReservations {
         int amount = Math.min(Math.min(available, intent.first()), cell.filter().stackSize());
         if (amount == 0) return CacheActions.Result.NO_SPACE;
         ItemStack prototype = cell.filter().stack(player.registryAccess(), 1);
-        Hold next = new Hold(player, handle, slot, cell.filter(), prototype, amount, creativeCursor != null, intent.session());
+        Hold next = new Hold(player, handle, slot, cell.filter(), prototype, amount, creativeCursor != null, intent.session(), requestSeq);
         HOLDS.put(player, next);
         ++epoch;
         cursor(player, next, prototype.copyWithCount(amount));
@@ -146,11 +147,14 @@ public final class CursorReservations {
     }
 
     /** A client that replaced/consumed its preview asks the server to release only its own panel-session
-     *  hold, so a later independent creative-source placement is not mis-debited by creativeAfter. Validated
-     *  by panel session + this player's own hold; never releases another player's reservation. */
-    public static void releasePreview(ServerPlayer player, UUID panelSession) {
+     *  hold, so a later independent creative-source placement is not mis-debited by creativeAfter. A
+     *  requestSeq (>=0) narrows to that specific take so an old release cannot clear a NEWER same-session
+     *  hold; otherwise it falls back to panel session + this player's own hold. Never another player's. */
+    public static void releasePreview(ServerPlayer player, UUID panelSession, int requestSeq) {
         Hold hold = HOLDS.get(player);
-        if (hold == null || !Objects.equals(hold.panelSession, panelSession)) return;
+        if (hold == null) return;
+        if (requestSeq >= 0) { if (hold.requestSeq != requestSeq) return; }
+        else if (!Objects.equals(hold.panelSession, panelSession)) return;
         cancel(player);
     }
 

@@ -78,6 +78,7 @@ public final class LogisticsPanel {
      *  it would destroy an independent same-variant creative carry from another player's reservation. */
     private static String previewVariant;
     private static int previewRemaining;
+    private static int previewSeq;
     /** Whether the TAKE_CURSOR was confirmed by the server (vs. still awaiting) so an empty carry is
      *  never mistaken for a replaced preview during the request/confirm gap. */
     private static boolean previewConfirmed;
@@ -289,7 +290,7 @@ public final class LogisticsPanel {
     private static void askServerReleasePreview() {
         if (snapshot == null || window == null || LogisticsPanel.MC.player == null) return;
         try {
-            var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, -1, -1, -1, "");
+            var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, previewSeq, -1, -1, "");
             // Use an incrementing window sequence so PanelNetwork.command accepts it (0 <= lastSequence would
             // be rejected as STALE). The confirm is not awaited (we do not touch waiting/predict), so it can
             // never cover another in-flight intent's confirmation.
@@ -1053,7 +1054,7 @@ public final class LogisticsPanel {
         // Track this client's local preview ownership for the withdrawn-amount bound of this take.
         // It is pending (previewConfirmed=false) until the server acknowledges; a rejected/expired take
         // never becomes confirmed and thus never claims a later independent same-variant carry.
-        if (action == CacheActions.Action.TAKE_CURSOR) { previewVariant = cell.template(); previewRemaining = delta; previewConfirmed = false; }
+        if (action == CacheActions.Action.TAKE_CURSOR) { previewVariant = cell.template(); previewRemaining = delta; previewConfirmed = false; previewSeq = sequence; }
     }
 
     private static Component tr(String key, Object ... args) {

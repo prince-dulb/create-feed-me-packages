@@ -61,8 +61,8 @@ public final class PanelNetwork {
         if (packet.sequence() <= window.lastSequence) return snapshot(player, window, packet.sequence(), CacheActions.Result.STALE);
         window.lastSequence = packet.sequence();
         var result = packet.creativeCursor()
-                ? CacheActions.executeCreative(player, packet.intent(), packet.cursorTemplate(), packet.cursorCount())
-                : CacheActions.execute(player, packet.intent());
+                ? CacheActions.executeCreative(player, packet.intent(), packet.cursorTemplate(), packet.cursorCount(), packet.sequence())
+                : CacheActions.execute(player, packet.intent(), packet.sequence());
         return snapshot(player, window, packet.sequence(), result);
     }
     private static PanelPackets.Snapshot snapshot(ServerPlayer player, Window window, int ack, CacheActions.Result result) {

@@ -75,10 +75,18 @@ public final class CacheActions {
         if (player.gameMode.isCreative() && player.containerMenu instanceof InventoryMenu
                 && (intent.action() == Action.DEPOSIT || intent.action() == Action.TAKE_CURSOR || intent.action() == Action.TAKE_RESIDUAL))
             return Result.INVALID_REQUEST;
-        return execute(player, intent, null);
+        return execute(player, intent, null, -1);
+    }
+
+    public static Result execute(ServerPlayer player, Intent intent, int requestSeq) {
+        return execute(player, intent, null, requestSeq);
     }
 
     public static Result executeCreative(ServerPlayer player, Intent intent, String template, int count) {
+        return executeCreative(player, intent, template, count, -1);
+    }
+
+    public static Result executeCreative(ServerPlayer player, Intent intent, String template, int count, int requestSeq) {
         if (!player.getAbilities().instabuild || !player.gameMode.isCreative() || !(player.containerMenu instanceof InventoryMenu)
                 || !(intent.action() == Action.DEPOSIT || intent.action() == Action.TAKE_CURSOR || intent.action() == Action.TAKE_RESIDUAL))
             return Result.INVALID_REQUEST;
@@ -90,16 +98,18 @@ public final class CacheActions {
         // Creative inventory owns its cursor on the client. A second server cursor would be
         // returned by vanilla on close after SetCreativeModeSlot has already placed the item.
         if (!player.containerMenu.getCarried().isEmpty()) return Result.STALE;
-        return execute(player, intent, cursor);
+        return execute(player, intent, cursor, requestSeq);
     }
 
-    private static Result execute(ServerPlayer player, Intent intent, ItemStack creativeCursor) {
+    private static Result execute(ServerPlayer player, Intent intent, ItemStack creativeCursor, int requestSeq) {
         var access = AccessGate.resolve(player); var session = SESSIONS.get(player);
         if (session == null || !session.id().equals(intent.session()) || session.menu().get() != player.containerMenu) return Result.STALE;
         // A client that replaced/consumed its preview asks to release only its own panel-session hold,
         // before an independent creative-source placement could otherwise be mis-debited by creativeAfter.
         if (intent.action() == Action.RELEASE_PREVIEW) {
-            CursorReservations.releasePreview(player, intent.session());
+            // intent.slot() carries the requestSeq of the take that is being replaced (>=0) so an old
+            // release cannot clear a NEWER same-session hold; -1 means panel-session-wide fallback.
+            CursorReservations.releasePreview(player, intent.session(), intent.slot());
             return Result.OK;
         }
         // Retain enum ordinals as explicit rejection paths, never as hidden old UI capabilities.
@@ -125,7 +135,7 @@ public final class CacheActions {
         if (slot < 0 || slot >= before.state().cells().size()) return Result.INVALID_REQUEST;
         // A cursor preview/return is settled by the real cursor events; it is handled before the
         // cell actions below so a held preview never re-enters a plain insert (which would add stock).
-        Result cursorResult = CursorReservations.action(player, access.handle(), slot, intent, creativeCursor);
+        Result cursorResult = CursorReservations.action(player, access.handle(), slot, intent, creativeCursor, requestSeq);
         if (cursorResult != null) return cursorResult;
         var cell = before.state().cells().get(slot); var edit = before.state().edit();
         ItemStack nextCursor = null; InventoryTransfer.Plan inventoryPlan = null;
