@@ -386,4 +386,60 @@ public final class ConsumptionTests {
         helper.assertTrue(CraftingService.place(other, recipe(other, "minecraft:oak_planks"), true, false, true) == CraftingService.Result.OK
                 && CraftingService.grid(other.containerMenu).getItem(0).getCount() == 64 && stock(other, 0) == 128, "Maximum preparation consumed stock or exceeded native grid stack limit"); helper.succeed();
     }
+
+    @GameTest(template = "empty")
+    public static void cursorAndBatchCraftCommitDisjointStock(GameTestHelper helper) {
+        var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack());
+        seed(player, 0, new ItemStack(Items.OAK_LOG), 12);
+        var view = CacheActions.open(player);
+        helper.assertTrue(CacheActions.execute(player, new CacheActions.Intent(view.session(), view.record().state().revision(),
+                CacheActions.Action.TAKE_CURSOR, 0, 8, -1, "")) == CacheActions.Result.OK, "Cursor reservation failed");
+        helper.assertTrue(CraftingService.place(player, recipe(player, "minecraft:oak_planks"), true, false, true)
+                == CraftingService.Result.OK, "Batch preparation failed beside cursor preview");
+        var cache = AccessGate.resolve(player).handle().cacheId();
+        helper.assertTrue(stock(player, 0) == 12 && CraftingService.grid(player.containerMenu).getItem(0).getCount() == 4
+                && CraftingReservations.reservedCache(cache, 0, null) == 12, "Preparation reused the cursor's eight logs");
+        player.containerMenu.clicked(0, 0, ClickType.QUICK_MOVE, player);
+        helper.assertTrue(stock(player, 0) == 8 && inventoryCount(player, Items.OAK_PLANKS) == 16
+                && player.containerMenu.getCarried().getCount() == 8
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(cache, 0) == 8,
+                "Real batch craft spent cursor stock or double-charged its own material");
+        int target = -1;
+        for (int i = 0; i < player.containerMenu.slots.size(); i++) {
+            var slot = player.containerMenu.getSlot(i);
+            if (slot.container == player.getInventory() && slot.getContainerSlot() == 0) target = i;
+        }
+        for (int i = 0; i < 3; i++) player.containerMenu.clicked(target, 1, ClickType.PICKUP, player);
+        player.closeContainer();
+        helper.assertTrue(stock(player, 0) == 5 && inventoryCount(player, Items.OAK_LOG) == 3
+                && inventoryCount(player, Items.OAK_PLANKS) == 16 && player.containerMenu.getCarried().isEmpty()
+                && CraftingReservations.reservedCache(cache, 0, null) == 0,
+                "Partial placement/close after batch craft lost or duplicated material");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void fullRemainderDestinationPreservesBothReservations(GameTestHelper helper) {
+        var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack());
+        seed(player, 0, new ItemStack(Items.STONE), 8);
+        seed(player, 1, new ItemStack(capsule), 2);
+        var view = CacheActions.open(player);
+        helper.assertTrue(CacheActions.execute(player, new CacheActions.Intent(view.session(), view.record().state().revision(),
+                CacheActions.Action.TAKE_CURSOR, 0, 4, -1, "")) == CacheActions.Result.OK, "Cursor fixture failed");
+        helper.assertTrue(CraftingService.place(player, recipe(player, "create_feed_me_packages:test_remainder"), true, false, true)
+                == CraftingService.Result.OK, "Remainder preparation failed");
+        for (int i = 0; i < 36; i++) player.getInventory().setItem(i, new ItemStack(Items.DIRT, 64));
+        player.getInventory().setItem(0, new ItemStack(Items.SUGAR, 63));
+        player.containerMenu.clicked(0, 0, ClickType.QUICK_MOVE, player);
+        helper.assertTrue(stock(player, 0) == 8 && stock(player, 1) == 2 && inventoryCount(player, Items.SUGAR) == 63
+                && player.containerMenu.getCarried().getCount() == 4, "Remainder rejection partially consumed either source");
+        player.getInventory().setItem(1, ItemStack.EMPTY);
+        player.containerMenu.clicked(0, 0, ClickType.QUICK_MOVE, player);
+        helper.assertTrue(stock(player, 0) == 8 && stock(player, 1) == 1 && inventoryCount(player, Items.SUGAR) == 64
+                && inventoryCount(player, Items.BUCKET) == 1, "Accepted result/remainder did not debit exactly one capsule");
+        player.closeContainer();
+        helper.assertTrue(stock(player, 0) == 8 && stock(player, 1) == 1 && player.containerMenu.getCarried().isEmpty(),
+                "Closing mixed reservations changed unspent sources");
+        helper.succeed();
+    }
 }

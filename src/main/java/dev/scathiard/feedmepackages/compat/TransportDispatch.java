@@ -32,12 +32,23 @@ public final class TransportDispatch {
         }
     }
 
-    /** Try to send a package with a transport bee. dispatched=true means a drone was spawned.
-     *  The drone must fly inside the cache's actual logistics network so it can resolve the return
-     *  target at the address on the box; a placeholder UUID would spawn a drone that can never locate it. */
+    /** Try to send a package with a transport bee. dispatched=true means native transport accepted it.
+     *  Supply the cache's actual network for native address lookup; fallback and later target reselection
+     *  remain the transport mod's responsibility. */
     public static Result bee(ServerLevel level, ItemStack box, BlockPos spawnPos, java.util.UUID network) {
         if (!present("de.theidler.create_mobile_packages.robo.RoboManager")) return new Result(false, "bee");
         try {
+            // newRobo always returns a UUID, even when no destination can receive the cargo.
+            // Ask an unregistered native probe to resolve its target before handing over any real stock.
+            // This keeps native fallback/reselection semantics and creates no entity or transport record.
+            Class<?> robo = Class.forName("de.theidler.create_mobile_packages.robo.VirtualRobo");
+            Object probe = robo.getConstructor(ServerLevel.class, java.util.UUID.class, ItemStack.class, BlockPos.class, java.util.UUID.class)
+                    .newInstance(level, java.util.UUID.randomUUID(), box.copy(), spawnPos, network);
+            if (robo.getMethod("getTargetPosition").invoke(probe) == null) return new Result(false, "bee");
+            Object target = robo.getMethod("getTarget").invoke(probe);
+            Class<?> targetType = Class.forName("de.theidler.create_mobile_packages.robo.RoboTarget");
+            if (target == null || !Boolean.TRUE.equals(targetType.getMethod("isValid", robo).invoke(target, probe)))
+                return new Result(false, "bee");
             Class<?> roboManager = Class.forName("de.theidler.create_mobile_packages.robo.RoboManager");
             Object manager = roboManager.getMethod("get", ServerLevel.class).invoke(null, level);
             Method newRobo = roboManager.getMethod("newRobo", ServerLevel.class, ItemStack.class, BlockPos.class, java.util.UUID.class,

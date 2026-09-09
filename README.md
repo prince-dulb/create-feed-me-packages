@@ -77,6 +77,5 @@ Your inventory is used first, and the cache supplies the shortfall. Support incl
 | **JEI** | Optional | View recipes and transfer ingredients, drawing missing materials from the cache. Dragging JEI item templates into cache filters isn't supported. |
 | **Package Couriers** | Optional | Uses its existing paper-plane delivery to bring restocking packages to you, ready for this mod to receive into the cache. |
 | **Create: Mobile Packages** | Optional | Uses its existing robo-bee delivery to bring packages over, with their contents received into the cache on arrival. |
-| **TaCZ** | Optional | Once inventory ammunition runs out, reloading draws the matching ammo type from the cache, supplied by your factory. |
 
 Your factory needs stock, and the packages need a way to reach you. Paper planes and robo-bees still need their own infrastructure, addresses, and delivery conditions. The pendant won't build those for you or teleport materials out of storage. Without these optional mods, you can still use the cache and core features, and receive dedicated restocking packages obtained through other means.

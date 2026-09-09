@@ -96,11 +96,32 @@ final class ClientConsumptionReview {
                 require(mc.screen instanceof InventoryScreen && mc.player.containerMenu.getSlot(0).getItem().is(Items.OAK_PLANKS), "JEI plus did not return to the filled original grid");
                 server(p -> {
                     require(ConsumptionTests.stock(p, 0) == 12 && CraftingService.grid(p.containerMenu).getItem(0).getCount() == 1, "Actual JEI plus consumed the reserved cached log");
+                });
+                stage = 20; changed = tick;
+            }
+            case 20 -> {
+                if (!waited(10)) break;
+                mc.gameMode.handleInventoryMouseClick(mc.player.containerMenu.containerId, 0, 0, ClickType.PICKUP, mc.player);
+                next();
+            }
+            case 21 -> {
+                if (!waited(20)) break;
+                server(p -> require(ConsumptionTests.stock(p, 0) == 11 && p.containerMenu.getCarried().is(Items.OAK_PLANKS)
+                        && p.containerMenu.getCarried().getCount() == 4, "Actual JEI-filled craft did not consume exactly one log"));
+                mc.player.closeContainer(); next();
+            }
+            case 22 -> {
+                if (!waited(20)) break;
+                server(p -> {
+                    require(ConsumptionTests.stock(p, 0) == 11 && CraftingService.grid(p.containerMenu).isEmpty()
+                            && p.getInventory().items.stream().filter(v -> v.is(Items.OAK_PLANKS)).mapToInt(ItemStack::getCount).sum() == 4
+                            && p.getInventory().items.stream().noneMatch(v -> v.is(Items.OAK_LOG)),
+                            "Closing after JEI craft materialized unused preparation or lost output");
+                    FeedMePackages.LOGGER.info("FMP_JEI_REAL_CRAFT_PASSED cache=11 output=4 unused=0");
                     TestPlayers.necklace(p).setStackInSlot(0, ItemStack.EMPTY);
-                    // A real independent backpack source for the following unwear/native-JEI test.
                     p.getInventory().setItem(8, new ItemStack(Items.OAK_LOG)); p.containerMenu.broadcastFullState();
                 });
-                mc.player.closeContainer(); next();
+                stage = 14; changed = tick;
             }
             case 14 -> { if (!waited(30)) break; require(!ClientMaterials.active(), "Unwear did not clear client material hints"); mc.setScreen(new InventoryScreen(mc.player)); next(); }
             case 15 -> { if (!waited(20)) break; jei("openTransfer"); next(); }
@@ -119,7 +140,7 @@ final class ClientConsumptionReview {
                     // JEI's native centered layout may place a 1x1 input at another legal grid position.
                     require(logs == 1 && p.containerMenu.getSlot(0).getItem().is(Items.OAK_PLANKS)
                             && p.containerMenu.getSlot(0).getItem().getCount() == 4, "Unworn JEI did not retain native backpack transfer: " + grid.getItems());
-                    require(CacheLedger.get(p.getServer()).find(cacheId).state().cells().getFirst().amount() == 12, "Unworn native transfer consumed cache");
+                    require(CacheLedger.get(p.getServer()).find(cacheId).state().cells().getFirst().amount() == 11, "Unworn native transfer consumed cache");
                 }); next();
             }
             case 19 -> { if (waited(10)) return true; }

@@ -50,6 +50,39 @@ public final class GrowthTests {
     private static void close(ServerPlayer player, SmithingMenu menu) { menu.removed(player); player.containerMenu = player.inventoryMenu; }
 
     @GameTest(template = "empty")
+    public static void manufacturingAndOtherPlayerPreviewsDoNotMaterializeUnusedStock(GameTestHelper helper) {
+        for (int target : new int[]{2, 0}) {
+            var smith = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack());
+            ConsumptionTests.seed(smith, 0, new ItemStack(Items.STONE), 16);
+            var source = AccessGate.resolve(smith).handle().cacheId();
+            var pendant = TestPlayers.necklace(smith).getStackInSlot(0);
+            var other = TestPlayers.create(helper, pendant.copy());
+            @SuppressWarnings("unchecked") var recipe = (net.minecraft.world.item.crafting.RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>)
+                    smith.getServer().getRecipeManager().byKey(ResourceLocation.withDefaultNamespace("stone_button")).orElseThrow();
+            helper.assertTrue(dev.scathiard.feedmepackages.consumption.CraftingService.place(other, recipe, false, false, true)
+                    == dev.scathiard.feedmepackages.consumption.CraftingService.Result.OK, "Manufacturing fixture could not prepare its recipe");
+            var view = dev.scathiard.feedmepackages.interaction.CacheActions.open(other);
+            var result = dev.scathiard.feedmepackages.interaction.CacheActions.execute(other,
+                    new dev.scathiard.feedmepackages.interaction.CacheActions.Intent(view.session(), view.record().state().revision(),
+                            dev.scathiard.feedmepackages.interaction.CacheActions.Action.TAKE_CURSOR, 0, 8, -1, ""));
+            helper.assertTrue(result == dev.scathiard.feedmepackages.interaction.CacheActions.Result.OK, "Manufacturing fixture could not reserve a cursor");
+            TestPlayers.necklace(smith).setStackInSlot(0, ItemStack.EMPTY);
+            var menu = open(helper, smith, pendant, (target == 0 ? FmpRegistries.PRIVATE_LINK : FmpRegistries.upgradeLink(target)).toStack());
+            menu.createResult(); menu.clicked(3, 0, ClickType.PICKUP, smith);
+            helper.assertTrue(!menu.getCarried().isEmpty() && !menu.getCarried().getOrDefault(FmpRegistries.PREVIEW.get(), false), "Manufacturing could not commit");
+            other.closeContainer();
+            var ledger = CacheLedger.get(smith.getServer()); var id = target == 0 ? ledger.personal(smith.getUUID()) : source;
+            helper.assertTrue(id != null && ledger.find(id).state().cells().getFirst().amount() == 16
+                            && other.getInventory().items.stream().noneMatch(s -> s.is(Items.STONE) || s.is(Items.STONE_BUTTON))
+                            && other.containerMenu.getCarried().isEmpty()
+                            && dev.scathiard.feedmepackages.consumption.CraftingReservations.reservedCache(source, 0, null) == 0,
+                    "Manufacturing plus cancellation duplicated/lost another player's preview");
+            close(smith, menu);
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void allOrdinaryLevelsUseNativeResultClicksAndPreserveTheFullCache(GameTestHelper helper) {
         var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack()); var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer());
         ItemStack pendant = TestPlayers.necklace(player).getStackInSlot(0); UUID network = UUID.randomUUID(); pendant.set(FmpRegistries.NETWORK.get(), network);

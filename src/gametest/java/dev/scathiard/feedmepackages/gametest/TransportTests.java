@@ -46,12 +46,17 @@ public final class TransportTests {
             tests.add(test("mobile_native_flight", TransportTests::mobileNativeFlight));
             tests.add(test("mobile_native_boundaries", TransportTests::mobileNativeBoundaries));
             tests.add(test("return_mobile_dispatch", TransportTests::returnMobileDispatch));
+            tests.add(test("return_mobile_shared_stock", h -> returnSharedStock(h, true)));
+            tests.add(test("return_mobile_unavailable", h -> returnUnavailable(h, true, false)));
+            tests.add(test("return_mobile_full_port", h -> returnUnavailable(h, true, true)));
         }
         if (ModList.get().isLoaded("cmpackagecouriers")) {
             tests.add(test("paper_native_flight", TransportTests::paperNativeFlight));
             tests.add(test("paper_registry_roundtrip", TransportTests::paperRegistryRoundtrip));
             tests.add(test("paper_native_boundaries", TransportTests::paperNativeBoundaries));
             tests.add(test("return_paper_dispatch", TransportTests::returnPaperDispatch));
+            tests.add(test("return_paper_shared_stock", h -> returnSharedStock(h, false)));
+            tests.add(test("return_paper_unavailable", h -> returnUnavailable(h, false, false)));
         }
         return tests;
     }
@@ -444,5 +449,155 @@ public final class TransportTests {
             helper.assertTrue(ItemStack.matches(box, recovered), "Paper storage changed registered components or seal");
             helper.succeed();
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Paper storage experiment failed", failure); }
+    }
+
+    /** Actual return dispatch must leave both players' reserved sources untouched and deliver the exact surplus. */
+    @SuppressWarnings("unchecked")
+    private static void returnSharedStock(GameTestHelper helper, boolean mobile) {
+        var f = ReceiveTests.setup(helper, 0);
+        var player = f.player(); player.getInventory().clearContent();
+        player.setPos(helper.absoluteVec(new Vec3(3, 2, 3))); helper.getLevel().addNewPlayer(player);
+        UUID network = UUID.randomUUID();
+        try {
+            if (mobile) {
+                var pos = new BlockPos(1, 1, 1);
+                var block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse("create_mobile_packages:bee_port"));
+                helper.setBlock(pos, block.defaultBlockState());
+                block.setPlacedBy(helper.getLevel(), helper.absolutePos(pos), helper.getBlockState(pos), player, new ItemStack(block));
+                var port = helper.getBlockEntity(pos);
+                network = (UUID)port.getClass().getMethod("getLogisticsNetworkId").invoke(port);
+                var join = Class.forName("de.theidler.create_mobile_packages.network_settings.AddPlayerToNetworkPackage");
+                join.getMethod("handle", net.minecraft.server.level.ServerPlayer.class).invoke(
+                        join.getConstructor(UUID.class, UUID.class).newInstance(player.getUUID(), network), player);
+            } else {
+                var tx = new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("cmpackagecouriers:location_transmitter")));
+                tx.getItem().getClass().getMethod("setEnabled", ItemStack.class, boolean.class).invoke(null, tx, true);
+                tx.getItem().inventoryTick(tx, helper.getLevel(), player, 0, false);
+            }
+        } catch (ReflectiveOperationException failure) { throw new IllegalStateException(failure); }
+        TestPlayers.necklace(player).getStackInSlot(0).set(FmpRegistries.NETWORK.get(), network);
+        f.ledger().setReturnAddress(f.handle().cacheId(), SupplyService.address(player));
+        ConsumptionTests.seed(player, 0, new ItemStack(Items.STONE), 100);
+        var carrier = BuiltInRegistries.ITEM.get(ResourceLocation.parse(mobile ? "create_mobile_packages:robo_bee" : "cmpackagecouriers:cardboard_plane_parts"));
+        ConsumptionTests.seed(player, 1, new ItemStack(carrier), 1);
+        var before = f.record(); var edit = before.state().edit(); edit.thresholds(0, 0, 0);
+        f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish()));
+        var other = TestPlayers.create(helper, TestPlayers.necklace(player).getStackInSlot(0).copy());
+        reserveCursor(helper, other, 1, 1);
+        ReturnService.check(player);
+        helper.assertTrue(ConsumptionTests.stock(player, 0) == 100 && ConsumptionTests.stock(player, 1) == 1,
+                "Return consumed the carrier reserved by another player");
+        other.closeContainer();
+        reserveCursor(helper, player, 0, 64);
+        var recipe = (net.minecraft.world.item.crafting.RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>)
+                player.getServer().getRecipeManager().byKey(ResourceLocation.withDefaultNamespace("stone_button")).orElseThrow();
+        helper.assertTrue(dev.scathiard.feedmepackages.consumption.CraftingService.place(other, recipe, false, false, true)
+                == dev.scathiard.feedmepackages.consumption.CraftingService.Result.OK, "Shared recipe preparation failed");
+        ReturnService.check(player);
+        helper.assertTrue(ConsumptionTests.stock(player, 0) == 65 && ConsumptionTests.stock(player, 1) == 0
+                && dev.scathiard.feedmepackages.consumption.CraftingReservations.reservedCache(f.handle().cacheId(), 0, null) == 65,
+                "Return did not restrict cargo to S100-P64-C1=35, or consumed cached carrier twice");
+        other.containerMenu.clicked(0, 0, net.minecraft.world.inventory.ClickType.PICKUP, other);
+        helper.assertTrue(ConsumptionTests.stock(player, 0) == 64 && other.containerMenu.getCarried().is(Items.STONE_BUTTON),
+                "Craft could not commit its distinct reserved item after return");
+        other.closeContainer(); player.closeContainer();
+        helper.assertTrue(dev.scathiard.feedmepackages.consumption.CraftingReservations.reservedCache(f.handle().cacheId(), 0, null) == 0
+                && ConsumptionTests.stock(player, 0) == 64, "Close after return consumed or restored already-spent cargo");
+        ReturnService.check(player);
+        helper.assertTrue(ConsumptionTests.stock(player, 0) == 64, "Carrier-less second check spent more stock");
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(returnedCargo(player) == 35, "Return parcel has not arrived with exactly 35 stone"))
+                .thenExecute(() -> FeedMePackages.LOGGER.info("FMP_RETURN_SHARED_PASSED {} stock=64 crafted=1 delivered=35 carrier=0", mobile ? "mobile" : "paper"))
+                .thenExecute(() -> prepareCarrierRefill(helper, f, carrier))
+                .thenWaitUntil(() -> {
+                    SupplyService.tick(player);
+                    var packing = helper.absolutePos(new BlockPos(3, 1, 1));
+                    var output = helper.getLevel().getCapability(net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,
+                            packing, net.minecraft.core.Direction.NORTH);
+                    helper.assertTrue(output != null && PackageItem.isPackage(output.extractItem(0, 1, true)), "Waiting for real carrier replenishment package");
+                    var box = output.extractItem(0, 1, false);
+                    helper.assertTrue(dev.scathiard.feedmepackages.logistics.ReceiveService.receive(player, box) && box.isEmpty()
+                            && ConsumptionTests.stock(player, 1) == 1 && ConsumptionTests.stock(player, 0) == 64,
+                            "Carrier consumed by return was not replenished exactly once");
+                })
+                .thenExecute(() -> FeedMePackages.LOGGER.info("FMP_RETURN_CARRIER_REFILL_PASSED {} spent=1 factory=1 received=1", mobile ? "mobile" : "paper"))
+                .thenSucceed();
+    }
+    private static void prepareCarrierRefill(GameTestHelper helper, ReceiveTests.Fixture f, net.minecraft.world.item.Item carrier) {
+        var before = f.record(); var edit = before.state().edit(); edit.thresholds(0, 0, -1); edit.thresholds(1, 1, -1);
+        f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish()));
+        var packing = new BlockPos(3, 1, 1); var chestPos = packing.south(); var linkPos = packing.above();
+        helper.setBlock(chestPos, net.minecraft.world.level.block.Blocks.CHEST.defaultBlockState());
+        helper.setBlock(packing, com.simibubi.create.AllBlocks.PACKAGER.get().defaultBlockState()
+                .setValue(com.simibubi.create.content.logistics.packager.PackagerBlock.FACING, net.minecraft.core.Direction.NORTH));
+        helper.setBlock(linkPos, com.simibubi.create.AllBlocks.STOCK_LINK.get().defaultBlockState()
+                .setValue(com.simibubi.create.content.logistics.packagerLink.PackagerLinkBlock.FACE, net.minecraft.world.level.block.state.properties.AttachFace.FLOOR));
+        var chest = (net.minecraft.world.level.block.entity.ChestBlockEntity)helper.getBlockEntity(chestPos);
+        chest.setItem(0, new ItemStack(carrier)); chest.setChanged();
+        var link = (com.simibubi.create.content.logistics.packagerLink.PackagerLinkBlockEntity)helper.getBlockEntity(linkPos);
+        com.simibubi.create.content.logistics.packagerLink.LogisticallyLinkedBehaviour.remove(link.behaviour);
+        link.behaviour.freqId = TestPlayers.necklace(f.player()).getStackInSlot(0).get(FmpRegistries.NETWORK.get());
+        com.simibubi.create.content.logistics.packagerLink.LogisticallyLinkedBehaviour.keepAlive(link.behaviour);
+    }
+    private static void reserveCursor(GameTestHelper helper, net.minecraft.server.level.ServerPlayer player, int slot, int count) {
+        var view = dev.scathiard.feedmepackages.interaction.CacheActions.open(player);
+        var result = dev.scathiard.feedmepackages.interaction.CacheActions.execute(player,
+                new dev.scathiard.feedmepackages.interaction.CacheActions.Intent(view.session(), view.record().state().revision(),
+                        dev.scathiard.feedmepackages.interaction.CacheActions.Action.TAKE_CURSOR, slot, count, -1, ""));
+        helper.assertTrue(result == dev.scathiard.feedmepackages.interaction.CacheActions.Result.OK, "Could not reserve cursor: " + result);
+    }
+    private static int returnedCargo(net.minecraft.server.level.ServerPlayer player) {
+        int count = 0;
+        for (var box : player.getInventory().items) {
+            if (!PackageItem.isPackage(box) || !PackageItem.getAddress(box).equals(SupplyService.address(player))) continue;
+            var contents = PackageItem.getContents(box);
+            for (int i = 0; i < contents.getSlots(); i++) if (contents.getStackInSlot(i).is(Items.STONE)) count += contents.getStackInSlot(i).getCount();
+        }
+        return count;
+    }
+
+    private static void returnUnavailable(GameTestHelper helper, boolean mobile, boolean fullPort) {
+        var f = ReceiveTests.setup(helper, 0); var player = f.player(); player.getInventory().clearContent();
+        UUID network = UUID.randomUUID();
+        if (fullPort) {
+            var pos = new BlockPos(1, 1, 1);
+            var block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse("create_mobile_packages:bee_port"));
+            helper.setBlock(pos, block.defaultBlockState());
+            block.setPlacedBy(helper.getLevel(), helper.absolutePos(pos), helper.getBlockState(pos), player, new ItemStack(block));
+            var port = helper.getBlockEntity(pos);
+            try {
+                network = (UUID)port.getClass().getMethod("getLogisticsNetworkId").invoke(port);
+                var bees = (net.neoforged.neoforge.items.ItemStackHandler)port.getClass().getMethod("getRoboBeeInventory").invoke(port);
+                var bee = BuiltInRegistries.ITEM.get(ResourceLocation.parse("create_mobile_packages:robo_bee"));
+                for (int i = 0; i < bees.getSlots(); i++) bees.setStackInSlot(i, new ItemStack(bee, bees.getSlotLimit(i)));
+                helper.assertTrue(!(Boolean)port.getClass().getMethod("hasSpaceForPackageAndRobo").invoke(port), "Port fixture is not full");
+            } catch (ReflectiveOperationException failure) { throw new IllegalStateException(failure); }
+        }
+        TestPlayers.necklace(player).getStackInSlot(0).set(FmpRegistries.NETWORK.get(), network);
+        f.ledger().setReturnAddress(f.handle().cacheId(), "unavailable-" + UUID.randomUUID());
+        ConsumptionTests.seed(player, 0, new ItemStack(Items.STONE), 100);
+        var before = f.record(); var edit = before.state().edit(); edit.thresholds(0, 0, 0);
+        f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish()));
+        var carrier = BuiltInRegistries.ITEM.get(ResourceLocation.parse(mobile ? "create_mobile_packages:robo_bee" : "cmpackagecouriers:cardboard_plane_parts"));
+        player.getInventory().setItem(0, new ItemStack(carrier));
+        before = f.record();
+        player.setPos(helper.absoluteVec(new Vec3(1.5, 2, 1.5)));
+        // Native bees may fall back to ports on other networks. Bound only this synchronous probe's
+        // native range so ports belonging to concurrent GameTests cannot turn a no-target fixture into a valid flight.
+        try {
+            net.createmod.catnip.config.ConfigBase.ConfigInt range = null; int previous = 0;
+            if (mobile) {
+                var configs = Class.forName("de.theidler.create_mobile_packages.index.config.CMPConfigs");
+                var config = configs.getMethod("server").invoke(null);
+                range = (net.createmod.catnip.config.ConfigBase.ConfigInt)config.getClass().getField("beeMaxDistance").get(config);
+                previous = range.get(); range.set(2);
+            }
+            try { ReturnService.check(player); }
+            finally { if (range != null) range.set(previous); }
+        } catch (ReflectiveOperationException failure) { throw new IllegalStateException(failure); }
+        helper.assertTrue(f.record() == before && player.getInventory().getItem(0).getCount() == 1,
+                "Unavailable return target consumed stock/carrier: mobile=" + mobile + " fullPort=" + fullPort
+                        + " stock=" + ConsumptionTests.stock(player, 0) + " carrier=" + player.getInventory().getItem(0).getCount());
+        helper.succeed();
     }
 }
