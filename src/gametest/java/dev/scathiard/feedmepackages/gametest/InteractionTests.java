@@ -382,6 +382,31 @@ public final class InteractionTests {
     }
 
     @GameTest(template = "empty")
+    public static void creativeDropSettlesThroughWire(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        TestPlayers.nativePackets(player);
+        player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        var view = CacheActions.open(player);
+        var take = new CacheActions.Intent(view.session(), view.record().state().revision(), Action.TAKE_CURSOR, 0, 1, -1, "");
+        helper.assertTrue(CacheActions.executeCreative(player, take, "", 0) == Result.OK
+                && stock(player, 0) == 3
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1, "preview take failed");
+        // Negative slot = creative discard: creativeDropped debits the preview and drops a real ItemEntity,
+        // so the cache is NOT silently reduced with no world entity (the risk my negative-slot cancel caused).
+        player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(-1, new ItemStack(Items.STONE)));
+        helper.assertTrue(stock(player, 0) == 2
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0,
+                "creative drop did not settle cache/hold (S=" + stock(player, 0) + ")");
+        int dropped = 0;
+        for (var e : helper.getLevel().getAllEntities()) {
+            if (e instanceof net.minecraft.world.entity.item.ItemEntity ie && ie.getItem().is(Items.STONE)) dropped += ie.getItem().getCount();
+        }
+        helper.assertTrue(dropped == 1, "creative drop did not leave the real item (dropped=" + dropped + ")");
+        player.containerMenu.setCarried(ItemStack.EMPTY);
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void panelWireIsBoundedAndRoundTripsLargeTemplates(GameTestHelper helper) {
         var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack()); var access = AccessGate.resolve(player);
         var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(access.handle().cacheId());
