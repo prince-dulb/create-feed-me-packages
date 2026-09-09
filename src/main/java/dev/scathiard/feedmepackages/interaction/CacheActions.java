@@ -72,13 +72,15 @@ public final class CacheActions {
     }
 
     public static Result execute(ServerPlayer player, Intent intent) {
-        if (player.gameMode.isCreative() && player.containerMenu instanceof InventoryMenu
-                && (intent.action() == Action.DEPOSIT || intent.action() == Action.TAKE_CURSOR || intent.action() == Action.TAKE_RESIDUAL))
-            return Result.INVALID_REQUEST;
-        return execute(player, intent, null, -1);
+        return execute(player, intent, -1);
     }
 
     public static Result execute(ServerPlayer player, Intent intent, int requestSeq) {
+        // Creative inventory / ordinary packed access is gated HERE (the new-seq overload), so the old
+        // signature delegating to it cannot bypass the restriction by omitting the sequence.
+        if (player.gameMode.isCreative() && player.containerMenu instanceof InventoryMenu
+                && (intent.action() == Action.DEPOSIT || intent.action() == Action.TAKE_CURSOR || intent.action() == Action.TAKE_RESIDUAL))
+            return Result.INVALID_REQUEST;
         return execute(player, intent, null, requestSeq);
     }
 
@@ -107,10 +109,9 @@ public final class CacheActions {
         // A client that replaced/consumed its preview asks to release only its own panel-session hold,
         // before an independent creative-source placement could otherwise be mis-debited by creativeAfter.
         if (intent.action() == Action.RELEASE_PREVIEW) {
-            // intent.slot() carries the requestSeq of the take that is being replaced (>=0) so an old
-            // release cannot clear a NEWER same-session hold; -1 means panel-session-wide fallback.
-            CursorReservations.releasePreview(player, intent.session(), intent.slot());
-            return Result.OK;
+            // Intent.first carries the target takeSequence (the take being replaced); slot stays -1. The
+            // release Command's own sequence is only this message's increment, never the target.
+            return CursorReservations.releasePreview(player, intent.session(), intent.first());
         }
         // Retain enum ordinals as explicit rejection paths, never as hidden old UI capabilities.
         if (intent.action() == Action.TERMINAL_ENABLED || intent.action() == Action.CLEAR_NETWORK

@@ -290,7 +290,7 @@ public final class LogisticsPanel {
     private static void askServerReleasePreview() {
         if (snapshot == null || window == null || LogisticsPanel.MC.player == null) return;
         try {
-            var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, previewSeq, -1, -1, "");
+            var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, -1, previewSeq, -1, "");
             // Use an incrementing window sequence so PanelNetwork.command accepts it (0 <= lastSequence would
             // be rejected as STALE). The confirm is not awaited (we do not touch waiting/predict), so it can
             // never cover another in-flight intent's confirmation.

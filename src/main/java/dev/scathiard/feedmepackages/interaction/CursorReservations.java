@@ -146,16 +146,19 @@ public final class CursorReservations {
         }
     }
 
-    /** A client that replaced/consumed its preview asks the server to release only its own panel-session
-     *  hold, so a later independent creative-source placement is not mis-debited by creativeAfter. A
-     *  requestSeq (>=0) narrows to that specific take so an old release cannot clear a NEWER same-session
-     *  hold; otherwise it falls back to panel session + this player's own hold. Never another player's. */
-    public static void releasePreview(ServerPlayer player, UUID panelSession, int requestSeq) {
+    /** A client that replaced/consumed its preview asks the server to release only its own specific take.
+     *  All of creative + current menu + panel session + exact take rule must match; no wild card. Returns
+     *  the real result so the caller can reject a mismatched/stale target instead of pretending OK. */
+    public static CacheActions.Result releasePreview(ServerPlayer player, UUID panelSession, int targetTakeSequence) {
+        if (targetTakeSequence <= 0) return CacheActions.Result.INVALID_REQUEST;
         Hold hold = HOLDS.get(player);
-        if (hold == null) return;
-        if (requestSeq >= 0) { if (hold.requestSeq != requestSeq) return; }
-        else if (!Objects.equals(hold.panelSession, panelSession)) return;
+        if (hold == null) return CacheActions.Result.OK;
+        if (!hold.creative || hold.menu.get() != player.containerMenu
+                || !Objects.equals(hold.panelSession, panelSession)
+                || hold.requestSeq <= 0 || hold.requestSeq != targetTakeSequence)
+            return CacheActions.Result.STALE;
         cancel(player);
+        return CacheActions.Result.OK;
     }
 
     public static void validate(ServerPlayer player) {

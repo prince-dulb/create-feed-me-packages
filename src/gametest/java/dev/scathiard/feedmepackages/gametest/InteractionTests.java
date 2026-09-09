@@ -344,16 +344,18 @@ public final class InteractionTests {
         helper.assertTrue(PanelNetwork.command(f.player(), new PanelPackets.Command(window, 1, take, false, "", 0)).result() == Result.OK
                 && stock(f.player(), 0) == 32 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 16,
                 "Preview take through wire failed");
-        // Sequence 0 must be rejected as STALE and the hold stays (old release must not cancel a live hold).
-        var stale = new PanelPackets.Command(window, 0, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, -1, -1, ""), false, "", 0);
+        // A survival TAKE (creativeCursor=false) is NOT the creative hold the release path clears; the
+        // public sequence entry is still exercised (0/sequence/replay STALE), but the release itself is
+        // STALE for a non-creative hold — the survival fixture is never made to look like a creative one.
+        var stale = new PanelPackets.Command(window, 0, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 1, -1, ""), false, "", 0);
         helper.assertTrue(PanelNetwork.command(f.player(), stale).result() == Result.STALE
                 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 16,
                 "Sequence-0 release was not STALE / released the hold");
-        // An incrementing sequence is accepted: hold -> 0, cache stock unchanged.
-        var ok = new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, -1, -1, ""), false, "", 0);
-        helper.assertTrue(PanelNetwork.command(f.player(), ok).result() == Result.OK
-                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0
-                && stock(f.player(), 0) == 32, "Release was not accepted / did not clear hold / altered cache");
+        // A correct first target on a NON-creative hold -> STALE (survival is not the creative release path).
+        var ok = new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 1, -1, ""), false, "", 0);
+        helper.assertTrue(PanelNetwork.command(f.player(), ok).result() == Result.STALE
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 16,
+                "Survival hold was released (must be STALE)");
         // Replay of the same release sequence is STALE (replay guard retained).
         helper.assertTrue(PanelNetwork.command(f.player(), ok).result() == Result.STALE, "Release replay was not STALE");
         f.player().containerMenu.setCarried(ItemStack.EMPTY);
@@ -372,8 +374,8 @@ public final class InteractionTests {
         helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0)).result() == Result.OK
                 && stock(player, 0) == 3 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1,
                 "Creative take through wire failed");
-        // RELEASE_PREVIEW release of the creative hold -> reserved 0, cache stays 3.
-        var rel = new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, -1, -1, ""), false, "", 0);
+        // RELEASE_PREVIEW release of the creative hold (first=1, the take's seq) -> reserved 0, cache stays 3.
+        var rel = new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 1, -1, ""), false, "", 0);
         helper.assertTrue(PanelNetwork.command(player, rel).result() == Result.OK
                 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0
                 && stock(player, 0) == 3, "Creative hold release failed to clear the reservation");
@@ -402,6 +404,38 @@ public final class InteractionTests {
             if (e instanceof net.minecraft.world.entity.item.ItemEntity ie && ie.getItem().is(Items.STONE)) dropped += ie.getItem().getCount();
         }
         helper.assertTrue(dropped >= 1, "creative drop did not leave the real item (dropped=" + dropped + ")");
+        player.containerMenu.setCarried(ItemStack.EMPTY);
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void oldReleaseDoesNotTouchNewerHold(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        TestPlayers.nativePackets(player);
+        player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(player, new PanelPackets.Query(window, player.containerMenu.containerId, true));
+        var take = new CacheActions.Intent(view.session(), view.revision(), Action.TAKE_CURSOR, 0, 1, -1, "");
+        // TAKE A (cmd seq 1) -> creative hold requestSeq=1.
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0)).result() == Result.OK
+                && stock(player, 0) == 3 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1, "TAKE A failed");
+        // RELEASE A (cmd seq 2, first=1) releases the A hold.
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 1, -1, ""), false, "", 0)).result() == Result.OK
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0 && stock(player, 0) == 3, "RELEASE A failed");
+        // TAKE B (cmd seq 3) -> creative hold requestSeq=3.
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 3, take, true, "", 0)).result() == Result.OK
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1 && stock(player, 0) == 3, "TAKE B failed");
+        // A NEW command (seq 4, first=1) releasing A again -> STALE, B untouched.
+        var relA = PanelNetwork.command(player, new PanelPackets.Command(window, 4, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 1, -1, ""), false, "", 0));
+        helper.assertTrue(relA.result() == Result.STALE
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1 && stock(player, 0) == 3,
+                "Old RELEASE A was not STALE / touched B (reserved=" + dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) + ")");
+        // RELEASE B (seq 5, first=3) succeeds.
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 5, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 3, -1, ""), false, "", 0)).result() == Result.OK
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0 && stock(player, 0) == 3, "RELEASE B failed");
+        // Replay seq 5 -> STALE (rejection, inventory unchanged).
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 5, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 3, -1, ""), false, "", 0)).result() == Result.STALE
+                && stock(player, 0) == 3, "Replay RELEASE B was not STALE");
         player.containerMenu.setCarried(ItemStack.EMPTY);
         helper.succeed();
     }
