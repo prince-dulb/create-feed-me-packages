@@ -173,7 +173,14 @@ public final class ClientReview {
                         if (!reviewCreativePlacement()) return;
                         creativePlacementDone = true;
                     }
-                    if (!reviewCreativeIndependentSource()) return;
+                    if (!creativeIndependentDone) {
+                        if (!reviewCreativeIndependentSource()) return;
+                        creativeIndependentDone = true;
+                    }
+                    if (!independentPlaceDone) {
+                        if (!reviewIndependentPlace()) return;
+                        independentPlaceDone = true;
+                    }
                     advance();
                 }
                 case 15 -> {
@@ -322,6 +329,8 @@ public final class ClientReview {
     }
     private static int creativeStage, creativeChanged;
     private static boolean creativePlacementDone;
+    private static boolean creativeIndependentDone;
+    private static boolean independentPlaceDone;
     private static boolean reviewCreativePlacement() {
         var mc = Minecraft.getInstance();
         if (creativeStage != 0 && ticks - creativeChanged < 20) return false;
@@ -572,6 +581,63 @@ public final class ClientReview {
             var slot = picker.slots.stream().filter(s -> s.container == listContainer && s.getItem().is(item)).findFirst().orElseThrow();
             click(creative.getGuiLeft() + slot.x + 8, creative.getGuiTop() + slot.y + 8);
         } catch (ReflectiveOperationException e) { throw new IllegalStateException("T13 click slot failed for " + item, e); }
+    }
+
+    private static int gap2Stage, gap2Changed;
+    private static int gap2N;
+    // Gap2 (Planner §20): fresh independent source stone N placed into a cleared hotbar slot, then close.
+    // The cache must stay 3 (independent stone is not the cache-own preview); the old hold must be released
+    // (releasePreview fix), never debited as 3−N.
+    private static boolean reviewIndependentPlace() {
+        var mc = Minecraft.getInstance();
+        if (gap2Stage != 0 && ticks - gap2Changed < 20) return false;
+        switch (gap2Stage) {
+            case 0 -> {
+                if (!(mc.screen instanceof CreativeModeInventoryScreen)) throw new IllegalStateException("gap2 needs the creative screen");
+                try {
+                    var select = CreativeModeInventoryScreen.class.getDeclaredMethod("selectTab", net.minecraft.world.item.CreativeModeTab.class);
+                    select.setAccessible(true);
+                    select.invoke(mc.screen, net.minecraft.core.registries.BuiltInRegistries.CREATIVE_MODE_TAB
+                            .getHolderOrThrow(net.minecraft.world.item.CreativeModeTabs.NATURAL_BLOCKS).value());
+                } catch (ReflectiveOperationException e) { throw new IllegalStateException("gap2 selectTab failed", e); }
+                clickCellBody(0);
+            }
+            case 1 -> {
+                if (!(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 3)) return false;
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 3, "gap2 preview state"));
+                clickCreativeSlot(Items.DIRT);
+            }
+            case 2 -> {
+                if (!mc.player.containerMenu.getCarried().isEmpty()) return false;
+                clickCreativeSlot(Items.STONE);
+            }
+            case 3 -> { // fresh independent N; clear the SERVER hotbar slot 0 baseline (not just the client carry)
+                int n = mc.player.containerMenu.getCarried().getCount();
+                if (n <= 0) return false;
+                gap2N = n;
+                server(player -> player.getInventory().setItem(0, ItemStack.EMPTY));
+            }
+            case 4 -> { // place N into the cleared hotbar slot
+                if (ticks - gap2Changed < 20) return false; // wait for the server baseline work to join
+                placeIntoBackpack(0);
+            }
+            case 5 -> {
+                server(player -> {
+                    require(stock(player) == 3, "gap2 independent placement wrongly charged cache (S=" + stock(player) + ", expected 3)");
+                    require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "gap2 left a reservation");
+                    require(player.getInventory().getItem(0).getCount() == gap2N,
+                            "gap2 stone not in hotbar slot0 (inv0=" + player.getInventory().getItem(0).getCount() + ", expected " + gap2N + ")");
+                });
+                FeedMePackages.LOGGER.info("FMP_GAP2_INDEPENDENT_PLACE_PASSED N={}", gap2N);
+                mc.player.closeContainer();
+            }
+            case 6 -> {
+                mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
+                return true;
+            }
+            default -> throw new IllegalStateException("Unexpected gap2 stage");
+        }
+        gap2Stage++; gap2Changed = ticks; return false;
     }
 
     private static void creativeHotbarClick() {
