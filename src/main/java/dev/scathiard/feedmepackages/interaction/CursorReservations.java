@@ -147,10 +147,10 @@ public final class CursorReservations {
 
     /** A client that replaced/consumed its preview asks the server to release only its own panel-session
      *  hold, so a later independent creative-source placement is not mis-debited by creativeAfter. Validated
-     *  by panel session + this player's own creative hold; never releases another player's reservation. */
+     *  by panel session + this player's own hold; never releases another player's reservation. */
     public static void releasePreview(ServerPlayer player, UUID panelSession) {
         Hold hold = HOLDS.get(player);
-        if (hold == null || !hold.creative || !Objects.equals(hold.panelSession, panelSession)) return;
+        if (hold == null || !Objects.equals(hold.panelSession, panelSession)) return;
         cancel(player);
     }
 

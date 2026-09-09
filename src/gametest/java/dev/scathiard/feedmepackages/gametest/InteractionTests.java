@@ -337,6 +337,30 @@ public final class InteractionTests {
     }
 
     @GameTest(template = "empty")
+    public static void releasePreviewIsAcceptedThroughWire(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 32); UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(f.player(), new PanelPackets.Query(window, f.player().containerMenu.containerId, true));
+        var take = new CacheActions.Intent(view.session(), view.revision(), Action.TAKE_CURSOR, 0, 16, -1, "");
+        helper.assertTrue(PanelNetwork.command(f.player(), new PanelPackets.Command(window, 1, take, false, "", 0)).result() == Result.OK
+                && stock(f.player(), 0) == 32 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 16,
+                "Preview take through wire failed");
+        // Sequence 0 must be rejected as STALE and the hold stays (old release must not cancel a live hold).
+        var stale = new PanelPackets.Command(window, 0, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, -1, -1, ""), false, "", 0);
+        helper.assertTrue(PanelNetwork.command(f.player(), stale).result() == Result.STALE
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 16,
+                "Sequence-0 release was not STALE / released the hold");
+        // An incrementing sequence is accepted: hold -> 0, cache stock unchanged.
+        var ok = new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, -1, -1, ""), false, "", 0);
+        helper.assertTrue(PanelNetwork.command(f.player(), ok).result() == Result.OK
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0
+                && stock(f.player(), 0) == 32, "Release was not accepted / did not clear hold / altered cache");
+        // Replay of the same release sequence is STALE (replay guard retained).
+        helper.assertTrue(PanelNetwork.command(f.player(), ok).result() == Result.STALE, "Release replay was not STALE");
+        f.player().containerMenu.setCarried(ItemStack.EMPTY);
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void panelWireIsBoundedAndRoundTripsLargeTemplates(GameTestHelper helper) {
         var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack()); var access = AccessGate.resolve(player);
         var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(access.handle().cacheId());

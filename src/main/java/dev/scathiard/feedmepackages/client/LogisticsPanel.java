@@ -263,7 +263,11 @@ public final class LogisticsPanel {
         if (snapshot == null || window == null || LogisticsPanel.MC.player == null) return;
         try {
             var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, -1, -1, -1, "");
-            PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, 0, intent, false, "", 0), (CustomPacketPayload[])new CustomPacketPayload[0]);
+            // Use an incrementing window sequence so PanelNetwork.command accepts it (0 <= lastSequence would
+            // be rejected as STALE). The confirm is not awaited (we do not touch waiting/predict), so it can
+            // never cover another in-flight intent's confirmation.
+            int seq = ++sequence;
+            PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, seq, intent, false, "", 0), (CustomPacketPayload[])new CustomPacketPayload[0]);
         } catch (IllegalArgumentException invalid) { /* stale template; nothing to release */ }
     }
 
