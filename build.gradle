@@ -113,6 +113,7 @@ neoForge {
             client()
             gameDirectory = file("../.fmp-build-safe/run/client/${runProfile}")
             if (project.hasProperty('fmpClientReview')) systemProperty 'fmp.clientReview', 'true'
+            if (project.hasProperty('fmpT14Review')) systemProperty 'fmp.t14Review', 'true'
         }
 
         server {

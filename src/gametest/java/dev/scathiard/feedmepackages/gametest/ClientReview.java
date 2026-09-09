@@ -19,6 +19,7 @@ import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -40,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 /** Explicit opt-in, test-source-only driver. Uses real client/server networking and container event routing. */
 @EventBusSubscriber(modid = FeedMePackages.MOD_ID, bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
@@ -49,15 +51,24 @@ public final class ClientReview {
     private static final String RUN = Long.toString(System.currentTimeMillis());
     private static boolean failed;
     @SubscribeEvent public static void setup(FMLClientSetupEvent event) {
-        if (Boolean.getBoolean("fmp.clientReview")) event.enqueueWork(() -> NeoForge.EVENT_BUS.addListener(ClientReview::tick));
+        if (Boolean.getBoolean("fmp.clientReview") || Boolean.getBoolean("fmp.t14Review"))
+            event.enqueueWork(() -> NeoForge.EVENT_BUS.addListener(ClientReview::tick));
     }
     private static void tick(ClientTickEvent.Post event) {
         var mc = Minecraft.getInstance(); ticks++;
         try {
             if (work != null) { if (!work.isDone()) return; work.join(); work = null; }
+            if (Boolean.getBoolean("fmp.t14Review")) {
+                reviewT14();
+                return;
+            }
             if (ticks - changed > 2400) throw new IllegalStateException("Client review timed out in phase " + phase);
             if (Boolean.getBoolean("fmp.uiPlacementReview")) {
                 reviewUiPlacement();
+                return;
+            }
+            if (Boolean.getBoolean("fmp.t14Review")) {
+                reviewT14();
                 return;
             }
             switch (phase) {
@@ -337,6 +348,153 @@ public final class ClientReview {
         }
         creativeStage++; creativeChanged = ticks; return false;
     }
+    private static int t14Stage, t14Changed;
+    private static boolean t14Transition, t14Failed;
+    private static String t14WorldId;
+    private static UUID t14Player, t14CacheId;
+    private static MinecraftServer t14OldServer;
+    private static final long T14_STOCK = 120;
+
+    private static void reviewT14() {
+        var mc = Minecraft.getInstance();
+        if (t14Transition) return; // disconnect/openWorld 内部会 runTick → 重入保护
+        try {
+            if (ticks - t14Changed > 2400) throw new IllegalStateException("T14 review timed out in stage " + t14Stage);
+            if (work != null) { if (!work.isDone()) return; work.join(); work = null; }
+            switch (t14Stage) {
+                case 0 -> { // 语言/缩放/资源
+                    if (mc.getOverlay() != null || mc.screen == null) return;
+                    mc.options.pauseOnLostFocus = false; mc.options.guiScale().set(2); mc.resizeDisplay();
+                    mc.options.languageCode = "zh_cn"; mc.getLanguageManager().setSelected("zh_cn");
+                    work = mc.reloadResourcePacks(); t14Next();
+                }
+                case 1 -> { // 创建隔离世界
+                    t14WorldId = "fmp-t14-" + RUN;
+                    mc.createWorldOpenFlows().createFreshLevel(t14WorldId,
+                            new LevelSettings("FMP T14 " + RUN, GameType.SURVIVAL, false, Difficulty.PEACEFUL, true, new GameRules(), WorldDataConfiguration.DEFAULT),
+                            new WorldOptions(7319L, false, false), registry -> registry.registryOrThrow(Registries.WORLD_PRESET)
+                                    .getHolderOrThrow(WorldPresets.FLAT).value().createWorldDimensions(), mc.screen);
+                    t14Next();
+                }
+                case 2 -> { // 等入服；建立状态：缓存120、背包0、佩戴坠子，记录 UUID/cacheId
+                    if (mc.player == null || mc.screen != null || mc.getSingleplayerServer() == null || mc.player.tickCount < 20) return;
+                    server(player -> {
+                        var level = player.serverLevel();
+                        for (int x = 0; x <= 10; x++) for (int z = 0; z <= 10; z++) level.setBlockAndUpdate(new BlockPos(x, 120, z), Blocks.SMOOTH_STONE.defaultBlockState());
+                        player.teleportTo(5, 121, 5); level.setDayTime(6000);
+                        CuriosApi.getCuriosInventory(player).orElseThrow().getStacksHandler("necklace").orElseThrow().getStacks().setStackInSlot(0, FmpRegistries.PENDANT.toStack());
+                        AccessGate.resolve(player);
+                        player.getInventory().clearContent();
+                        var handle = AccessGate.resolve(player).handle();
+                        t14Player = player.getUUID(); t14CacheId = handle.cacheId();
+                        var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(handle.cacheId());
+                        var edit = before.state().edit();
+                        var stone = ItemVariantKey.of(new ItemStack(Items.STONE), player.registryAccess());
+                        edit.filter(0, stone); edit.insert(0, stone, (int) T14_STOCK);
+                        ledger.replace(handle, before.state().revision(), before.withState(edit.finish()));
+                        player.containerMenu.broadcastFullState();
+                    }); t14Next();
+                }
+                case 3 -> { if (ticks - t14Changed < 30) return; mc.setScreen(new InventoryScreen(mc.player)); t14Next(); }
+                case 4 -> { // 光标空点格0 → 拿起 64 预览
+                    if (ticks - t14Changed < 25 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
+                    clickCellBody(0); t14Next();
+                }
+                case 5 -> { // 预览64：光标64 / 缓存120不变 / 预留64
+                    if (ticks - t14Changed < 20 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
+                    require(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 64, "T14 preview take amount");
+                    server(player -> {
+                        require(stock(player) == T14_STOCK, "T14 preview must not deduct");
+                        require(CursorReservations.reserved(t14CacheId, 0) == 64, "T14 preview reserve");
+                    }); t14Next();
+                }
+                case 6 -> { if (ticks - t14Changed < 15) return; placeIntoBackpack(0); t14Next(); }
+                case 7 -> { // 整份放下：光标空 / 缓存56 / 预留0 / 背包64
+                    if (ticks - t14Changed < 20 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
+                    require(mc.player.containerMenu.getCarried().isEmpty(), "T14 placement cursor");
+                    server(player -> {
+                        require(stock(player) == T14_STOCK - 64, "T14 placement debit");
+                        require(CursorReservations.reserved(t14CacheId, 0) == 0, "T14 placement reserve");
+                        require(inventoryStones(player) == 64, "T14 placement backpack");
+                    }); t14Next();
+                }
+                case 8 -> { // 暂留预览56（真实拿起,无落位）
+                    if (ticks - t14Changed < 20 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
+                    clickCellBody(0); t14Next();
+                }
+                case 9 -> { // 暂留：光标56 / 缓存56不变 / 预留56
+                    if (ticks - t14Changed < 20 || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
+                    require(mc.player.containerMenu.getCarried().getCount() == 56, "T14 transient take amount");
+                    server(player -> {
+                        require(stock(player) == T14_STOCK - 64, "T14 transient must not deduct");
+                        require(CursorReservations.reserved(t14CacheId, 0) == 56, "T14 transient reserve");
+                    }); t14Next();
+                }
+                case 10 -> { if (ticks - t14Changed < 15) return; mc.player.closeContainer(); t14Next(); }
+                case 11 -> { // 取消暂留：光标空 / 缓存56不变 / 预留0 / 背包64
+                    if (ticks - t14Changed < 25) return;
+                    require(mc.player.containerMenu.getCarried().isEmpty(), "T14 cancel cursor");
+                    server(player -> {
+                        require(stock(player) == T14_STOCK - 64, "T14 cancel must not deduct");
+                        require(CursorReservations.reserved(t14CacheId, 0) == 0, "T14 cancel clear reservation");
+                        require(inventoryStones(player) == 64, "T14 cancel backpack");
+                    }); t14Next();
+                }
+                case 12 -> { // 原生退出序列：先断连接再 disconnect(保存)
+                    if (ticks - t14Changed < 20 || mc.level == null) return;
+                    t14OldServer = mc.getSingleplayerServer();
+                    t14Transition = true;
+                    try { mc.level.disconnect(); mc.disconnect(new TitleScreen()); }
+                    finally { t14Transition = false; }
+                    t14Next();
+                }
+                case 13 -> { // 等旧服 shutdown 且客户端 level/player 清空
+                    if (ticks - t14Changed < 20) return;
+                    if (t14OldServer != null && !t14OldServer.isShutdown()) return;
+                    if (mc.level != null || mc.getSingleplayerServer() != null) return;
+                    t14Next();
+                }
+                case 14 -> { // 加载原世界（同 worldId）
+                    if (ticks - t14Changed < 30) return;
+                    t14Transition = true;
+                    try { mc.createWorldOpenFlows().openWorld(t14WorldId, () -> { t14Failed = true; mc.setScreen(new TitleScreen()); }); }
+                    finally { t14Transition = false; }
+                    t14Next();
+                }
+                case 15 -> { // 等新服就绪、同一玩家重进
+                    if (ticks - t14Changed < 30) return;
+                    if (mc.player == null || mc.screen != null || mc.getSingleplayerServer() == null || mc.player.tickCount < 20) return;
+                    t14Next();
+                }
+                case 16 -> { // 重载后验证：UUID/cacheId 不变、缓存56、背包64、预留0、光标空
+                    if (ticks - t14Changed < 40) return;
+                    server(player -> {
+                        require(player.getUUID().equals(t14Player), "T14 reload player UUID changed");
+                        require(AccessGate.resolve(player).handle().cacheId().equals(t14CacheId), "T14 reload cacheId changed");
+                        require(stock(player) == T14_STOCK - 64, "T14 reload cache stock");
+                        require(inventoryStones(player) == 64, "T14 reload backpack");
+                        require(CursorReservations.reserved(t14CacheId, 0) == 0, "T14 reload reservation");
+                    });
+                    require(mc.player.containerMenu.getCarried().isEmpty(), "T14 reload cursor");
+                    FeedMePackages.LOGGER.info("FMP_T14_PASSED {}", RUN);
+                    t14Next();
+                }
+                case 17 -> { if (ticks - t14Changed < 30) return; mc.stop(); t14Next(); }
+                default -> {}
+            }
+        } catch (Throwable problem) {
+            if (!t14Failed) {
+                t14Failed = true; FeedMePackages.LOGGER.error("FMP_T14_FAILED", problem); capture("t14-failure");
+                if (mc.level != null) mc.level.disconnect();
+                mc.disconnect(new TitleScreen());
+            }
+        }
+    }
+    private static void t14Next() { t14Stage++; t14Changed = ticks; }
+    private static int inventoryStones(ServerPlayer player) {
+        return player.getInventory().items.stream().filter(s -> s.is(Items.STONE)).mapToInt(ItemStack::getCount).sum();
+    }
+
     private static void creativeHotbarClick() {
         var mc = Minecraft.getInstance(); var screen = (CreativeModeInventoryScreen)mc.screen;
         var slot = screen.getMenu().slots.stream().filter(s -> s.container == mc.player.getInventory() && s.getContainerSlot() == 0).findFirst().orElseThrow();
