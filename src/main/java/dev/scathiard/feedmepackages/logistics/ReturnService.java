@@ -13,10 +13,7 @@ import dev.scathiard.feedmepackages.storage.CacheHandle;
 import dev.scathiard.feedmepackages.storage.CacheLedger;
 import dev.scathiard.feedmepackages.storage.CacheRecord;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.UUID;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -30,22 +27,22 @@ public final class ReturnService {
     private static final Item BEE = BuiltInRegistries.ITEM.get(ResourceLocation.parse("create_mobile_packages:robo_bee"));
     private static final int PACKAGE_SLOTS = 9;
     private record Carrier(int inventorySlot, int cacheSlot) {}
-
-    /** Per-cell return dispatch evidence, short-lived and never persisted. UNKNOWN means no evidence
-     *  (gray), FAILED means a check ran but no carrier was accepted (gray), SENT means a real carrier
-     *  accepted the package (red while the cell is still above its maximum). Keyed by cacheId so a
-     *  context change can never inherit another cache/player's success state. */
-    public static final int RETURN_UNKNOWN = 0, RETURN_FAILED = 1, RETURN_SENT = 2;
-    private static final Map<UUID, byte[]> DISPATCH_STATES = new HashMap<>();
+    public static final int RETURN_UNKNOWN = 0;
+    public static final int RETURN_FAILED = 1;
+    public static final int RETURN_SENT = 2;
 
     private ReturnService() {}
 
-    /** Latest per-cell dispatch evidence for the panel snapshot. Slot outside the recorded size or an
-     *  absent cache reads UNKNOWN (no evidence -> gray arrow, never a stale red). */
-    public static int dispatchState(UUID cacheId, int slot) {
-        byte[] states = DISPATCH_STATES.get(cacheId);
-        if (states == null || slot < 0 || slot >= states.length) return RETURN_UNKNOWN;
-        return states[slot];
+    public static void clearTransient() {
+        ReturnDispatchState.clear();
+    }
+
+    public static void forget(ServerPlayer player) {
+        ReturnDispatchState.forget(player.getUUID());
+    }
+
+    public static int dispatchState(CacheHandle handle, String address, int slot, String filter, int maximum) {
+        return ReturnDispatchState.state(handle, address, slot, filter, maximum);
     }
 
     public static void tick(ServerPlayer player) {
@@ -56,33 +53,47 @@ public final class ReturnService {
         AccessGate.Result access = AccessGate.resolve(player);
         if (!access.active()) return;
         CacheHandle handle = access.handle();
-        if (handle.networkId() == null) { DISPATCH_STATES.remove(handle.cacheId()); return; }
-        if (CraftingReservations.operating(handle.cacheId())) { DISPATCH_STATES.remove(handle.cacheId()); return; }
+        if (handle.networkId() == null || CraftingReservations.operating(handle.cacheId())) {
+            ReturnDispatchState.reset(handle);
+            return;
+        }
         CacheLedger ledger = CacheLedger.get(player.getServer());
         String address = ledger.returnAddress(handle.cacheId());
         CacheRecord record = ledger.find(handle.cacheId());
-        if (record == null) { DISPATCH_STATES.remove(handle.cacheId()); return; }
+        if (record == null) {
+            ReturnDispatchState.reset(handle);
+            return;
+        }
         int slots = record.state().cells().size();
-        // Fresh context: never inherit the previous check's success state.
-        if (DISPATCH_STATES.get(handle.cacheId()) == null || DISPATCH_STATES.get(handle.cacheId()).length != slots)
-            DISPATCH_STATES.put(handle.cacheId(), new byte[slots]);
-        byte[] states = DISPATCH_STATES.get(handle.cacheId());
+        ReturnDispatchState.ensureContext(handle, address, slots);
         for (int slot = 0; slot < slots; slot++) {
             AccessGate.Result current = AccessGate.resolve(player);
             if (!current.active() || !current.handle().equals(handle)) return;
-            // Re-read the live record each slot: an earlier dispatch may have trimmed this cache.
             CacheRecord live = ledger.find(handle.cacheId());
-            if (live == null) { DISPATCH_STATES.remove(handle.cacheId()); return; }
+            if (live == null || slot >= live.state().cells().size()) {
+                ReturnDispatchState.reset(handle);
+                return;
+            }
             Cell<ItemVariantKey> cell = live.state().cells().get(slot);
-            if (cell.filter() == null || cell.maximum() < 0) { states[slot] = (byte) RETURN_UNKNOWN; continue; }
+            String filter = cell.filter() == null ? "" : cell.filter().encoded();
+            if (cell.filter() == null || cell.maximum() < 0) {
+                ReturnDispatchState.rememberCell(handle, slot, filter, cell.maximum(), RETURN_UNKNOWN);
+                continue;
+            }
             int overage = Math.max(0, cell.amount() - cell.maximum() * cell.filter().stackSize());
-            if (overage == 0) { states[slot] = (byte) RETURN_UNKNOWN; continue; }
-            if (address == null || address.isEmpty()) { states[slot] = (byte) RETURN_FAILED; continue; }
+            if (overage == 0) {
+                ReturnDispatchState.rememberCell(handle, slot, filter, cell.maximum(), RETURN_UNKNOWN);
+                continue;
+            }
+            if (address == null || address.isEmpty()) {
+                ReturnDispatchState.rememberCell(handle, slot, filter, cell.maximum(), RETURN_FAILED);
+                continue;
+            }
             // Preserve plane-first preference. A rejected attempt changes no FMP stock
             // and the bee receives its own newly built package, never the plane's object.
-            int state = dispatch(player, handle, ledger, slot, CARD, address);
-            if (state == RETURN_FAILED) state = dispatch(player, handle, ledger, slot, BEE, address);
-            states[slot] = (byte) state;
+            int result = dispatch(player, handle, ledger, slot, CARD, address);
+            if (result == RETURN_FAILED) result = dispatch(player, handle, ledger, slot, BEE, address);
+            ReturnDispatchState.rememberCell(handle, slot, filter, cell.maximum(), result);
         }
     }
 

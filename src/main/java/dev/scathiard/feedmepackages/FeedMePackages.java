@@ -39,8 +39,9 @@ public final class FeedMePackages {
             if (event.getEntity() instanceof ServerPlayer player) PanelNetwork.forget(player);
         });
         NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent event) -> {
-            if (event.getEntity() instanceof ServerPlayer player) { CraftingReservations.forget(player); PanelNetwork.forget(player); MaterialHints.forget(player); }
+            if (event.getEntity() instanceof ServerPlayer player) { CraftingReservations.forget(player); PanelNetwork.forget(player); MaterialHints.forget(player); ReturnService.forget(player); }
         });
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.server.ServerStoppingEvent event) -> ReturnService.clearTransient());
         NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerChangeGameModeEvent event) -> {
             if (event.getEntity() instanceof ServerPlayer player) CraftingReservations.forget(player);
         });

@@ -37,7 +37,7 @@ public final class PanelNetwork {
         }
     }
     public static void register(RegisterPayloadHandlersEvent event) {
-        var registrar = event.registrar("3");
+        var registrar = event.registrar("4");
         registrar.playToServer(PanelPackets.Query.TYPE, PanelPackets.Query.CODEC, (packet, context) -> {
             var reply = query((ServerPlayer) context.player(), packet); if (reply != null) context.reply(reply);
         });
@@ -127,19 +127,20 @@ public final class PanelNetwork {
                 ((PendantItem)t.stack().getItem()).personal(), t.disabled(), t.network() == null ? "" : t.network().toString())).toList();
         List<PanelPackets.CellView> cells = new ArrayList<>();
         String residualItem = "";
+        String returnAddress = access.active() && access.handle() != null
+                ? dev.scathiard.feedmepackages.storage.CacheLedger.get(player.getServer()).returnAddress(access.handle().cacheId()) : null;
         if (record != null) {
             for (int i = 0; i < record.state().cells().size(); i++) {
                 var cell = record.state().cells().get(i);
                 boolean slotResidual = cell.filter() != null && !record.residual(cell.filter()).isEmpty();
                 int reserved = cell.filter() == null ? 0 : dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(access.handle().cacheId(), i);
-                cells.add(new PanelPackets.CellView(cell.filter() == null ? "" : cell.filter().encoded(), cell.amount(), cell.minimum(), cell.maximum(), record.state().pending(i), reserved, cell.filter() == null ? 1 : cell.filter().stackSize(), slotResidual,
-                        dev.scathiard.feedmepackages.logistics.ReturnService.dispatchState(access.handle().cacheId(), i)));
+                String template = cell.filter() == null ? "" : cell.filter().encoded();
+                cells.add(new PanelPackets.CellView(template, cell.amount(), cell.minimum(), cell.maximum(), record.state().pending(i), reserved, cell.filter() == null ? 1 : cell.filter().stackSize(), slotResidual,
+                        dev.scathiard.feedmepackages.logistics.ReturnService.dispatchState(access.handle(), returnAddress, i, template, cell.maximum())));
             }
             for (var box : record.residuals().values())
                 if (!box.isEmpty()) { residualItem = BuiltInRegistries.ITEM.getKey(box.getItem()).toString(); break; }
         }
-        String returnAddress = access.active() && access.handle() != null
-                ? dev.scathiard.feedmepackages.storage.CacheLedger.get(player.getServer()).returnAddress(access.handle().cacheId()) : null;
         return new PanelPackets.Snapshot(window.id, view.session(), ++window.serial, ack, result, access.status(),
                 record == null ? -1 : record.state().revision(), record == null ? 0 : record.state().level(),
                 record == null ? 0 : CacheLevel.of(record.state().level()).capacity(), record != null && record.owner() != null,

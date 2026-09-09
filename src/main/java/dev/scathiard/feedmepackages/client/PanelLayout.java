@@ -37,30 +37,35 @@ public record PanelLayout(Rect bounds, List<CellBox> cells, Rect slider, Rect re
         return Math.max(2, (Math.max(0, count) + MAX_ROWS - 1) / MAX_ROWS);
     }
     public static int preferredWidth(int count) { return preferredColumns(count) * ROW + 2 * SIDE; }
-    private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(value, max)); }
+    /** Offset of the LAST painted track pixel from the track's first pixel. The track is
+     *  {@code width - 2*TRACK_INSET} pixels wide, so this is that width minus one. */
+    public static int sliderTrackSpan(int width) { return Math.max(1, width - 2 * TRACK_INSET - 1); }
 
-    /** Pixel of a slider endpoint value inside the track artwork. Zero sits on the track's left edge
-     *  and the maximum is clamped to the track's LAST pixel, so the endpoint can never overshoot the
-     *  drawn rail by one pixel (the old integer quotient put value==cap one pixel past it). Rendering,
-     *  hit-testing and drag math all read this same function. */
-    public static int thumbPx(int sliderX, int width, int value, int groupCap) {
+    /** Endpoint pixel for a group value. Zero sits on the track's first pixel, the maximum is clamped
+     *  to the LAST painted pixel (never one past it), and -1 (no return) renders at the maximum
+     *  position. Rendering and hit-testing share this function. */
+    public static int sliderThumbPx(int sliderX, int width, int value, int groupCap) {
         int cap = Math.max(1, groupCap);
         int trackW = Math.max(1, width - 2 * TRACK_INSET);
         int first = sliderX + TRACK_INSET;
         int last = first + trackW - 1;
-        int clamped = value < 0 ? cap : Math.max(0, Math.min(cap, value));
+        int clamped = Math.clamp((long)(value < 0 ? cap : value), 0, cap);
         int raw = first + clamped * trackW / cap;
         return Math.max(first, Math.min(last, raw));
     }
 
-    /** Inverse of {@link #thumbPx} in its unclamped range: the group value at a drag position. The
-     *  midpoint pixel maps to cap/2 groups, preserving the established slider semantics. */
-    public static int thumbValueAt(int sliderX, int width, double x, int groupCap) {
+    /** Group value under the mouse: rounds to the NEAREST step so the endpoint follows the cursor.
+     *  The last painted pixel always reads as the maximum, so dragging fully right cannot come back
+     *  one group short. Flooring here made the endpoint lag behind the cursor and then jump a whole
+     *  step (worst at low levels), which is the "not following the mouse" regression from test.57. */
+    public static int sliderValue(int sliderX, int width, double x, int groupCap) {
         int cap = Math.max(1, groupCap);
         int trackW = Math.max(1, width - 2 * TRACK_INSET);
-        double relative = x - sliderX - TRACK_INSET;
-        return Math.max(0, Math.min(cap, (int)Math.round(relative * cap / trackW)));
+        double relative = x - (double)sliderX - TRACK_INSET;
+        if (relative >= trackW - 1) return cap;
+        return Math.clamp((long)Math.round(relative * (double)cap / trackW), 0, cap);
     }
+    private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(value, max)); }
 
     public static PanelLayout compute(int screenHeight, int left, int top, int count,
             int firstRow, int expanded, boolean bookOpen) {

@@ -45,8 +45,7 @@ public final class PanelPackets {
         });
         @Override public Type<Command> type() { return TYPE; }
     }
-    public record CellView(String template, int amount, int minimum, int maximum, int pending, int reserved, int stackSize, boolean residual,
-                           int returnState) {}
+    public record CellView(String template, int amount, int minimum, int maximum, int pending, int reserved, int stackSize, boolean residual, int returnState) {}
     /** FMP-owned cursor update, never a full vanilla inventory replacement. */
     public record CursorUpdate(UUID window, UUID session, int takeSequence, int operationSequence,
                                long updateSequence, String template, int count, int remaining) implements CustomPacketPayload {

@@ -47,6 +47,9 @@ import java.util.UUID;
 @EventBusSubscriber(modid = FeedMePackages.MOD_ID, bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class ClientReview {
     private static int phase, ticks, changed;
+    private static boolean addressQueuedClickStarted;
+    private static int returnStage, returnChanged;
+    private static int returnClickTargetSlot = -1;
     private static CompletableFuture<Void> work;
     private static final String RUN = Long.toString(System.currentTimeMillis());
     private static boolean failed;
@@ -131,7 +134,9 @@ public final class ClientReview {
                         var edit = before.state().edit(); for (int level = 1; level < 5; level++) edit.upgrade(); edit.thresholds(0, 2, -1);
                         Item[] examples = {Items.IRON_INGOT, Items.COPPER_INGOT, Items.REDSTONE, Items.ANDESITE, Items.GLASS, Items.HOPPER, Items.RAIL, Items.OAK_PLANKS};
                         for (int i = 0; i < examples.length; i++) {
-                            var key = ItemVariantKey.of(new ItemStack(examples[i]), player.registryAccess()); edit.filter(i + 1, key); edit.insert(i + 1, key, 100 + i * 173);
+                            var key = ItemVariantKey.of(new ItemStack(examples[i]), player.registryAccess());
+                            edit.filter(i + 1, key);
+                            if (i < 2) edit.insert(i + 1, key, 100 + i * 173);
                         }
                         ledger.replace(handle, before.state().revision(), before.withState(edit.finish()));
                     }); advance();
@@ -145,15 +150,7 @@ public final class ClientReview {
                     capture("02-expanded-level5");
                     dragMinimumToMidpoint(0); advance();
                 }
-                case 10 -> {
-                    if (ticks - changed < 30) return;
-                    server(player -> {
-                        var cell = CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId()).state().cells().getFirst();
-                        require(cell.minimum() == 16 && cell.maximum() == -1, "Slider minimum must be 16 groups (16x64=1024), max -1");
-                        require(cell.amount() == 0, "Slider drag must not move items");
-                        player.setGameMode(GameType.CREATIVE);
-                    }); mc.setScreen(null); advance();
-                }
+                case 10 -> { if (reviewReturnInteractions(mc)) advance(); }
                 case 11 -> { if (ticks - changed < 10) return; mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get())); advance(); }
                 case 12 -> {
                     if (ticks - changed < 25 || !(mc.screen instanceof CreativeModeInventoryScreen) || !LogisticsPanel.recipeReady() || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return;
@@ -215,10 +212,6 @@ public final class ClientReview {
                 case 19 -> {
                     if (ticks - changed < 40) return;
                     if (!reviewLayouts()) return;
-                    if (!clickOutsideDone) {
-                        if (!reviewClickOutside()) return;
-                        clickOutsideDone = true;
-                    }
                     advance();
                 }
                 case 20 -> {
@@ -344,7 +337,6 @@ public final class ClientReview {
     private static boolean creativeIndependentDone;
     private static boolean independentPlaceDone;
     private static boolean sameTickDone;
-    private static boolean clickOutsideDone;
     private static boolean reviewCreativePlacement() {
         var mc = Minecraft.getInstance();
         if (creativeStage != 0 && ticks - creativeChanged < 20) return false;
@@ -839,6 +831,285 @@ public final class ClientReview {
                 .findFirst().orElseThrow();
         click(screen.getGuiLeft() + slot.x + 8, screen.getGuiTop() + slot.y + 8);
     }
+
+    private static boolean reviewReturnInteractions(Minecraft mc) {
+        if (returnChanged == 0) {
+            returnChanged = changed;
+        }
+        if (ticks - returnChanged > 240) {
+            throw new IllegalStateException("Return interaction review timed out in substage " + returnStage
+                    + " carried=" + mc.player.containerMenu.getCarried()
+                    + " selected=" + panelInt("selected")
+                    + " slider=" + (panelLayout().slider() != null));
+        }
+        switch (returnStage) {
+            case 0 -> {
+                if (ticks - changed < 30) return false;
+                server(player -> {
+                    var cell = CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId()).state().cells().getFirst();
+                    require(cell.minimum() == 16 && cell.maximum() == -1, "Slider minimum must be 16 groups (16x64=1024), max -1");
+                    require(cell.amount() == 0, "Slider drag must not move items");
+                });
+                var returnBar = panelLayout().returnBar();
+                click(returnBar.x() + 2, returnBar.y() + 2);
+                panelSetString("returnBuffer", "FMP@test57-" + RUN);
+                var dot = LogisticsPanel.visibleCells(mc.screen).stream().filter(c -> c.slot() == 1).findFirst().orElseThrow().dot();
+                click(dot.x() + 1, dot.y() + 2);
+                returnNext();
+            }
+            case 1 -> {
+                if (ticks - returnChanged < 30 || !LogisticsPanel.recipeReady()) return false;
+                require(panelInt("selected") == 1, "Address save swallowed queued cell-dot click");
+                require(mc.player.containerMenu.getCarried().isEmpty(), "Queued address save click moved an item");
+                server(player -> {
+                    var handle = AccessGate.resolve(player).handle();
+                    require(("FMP@test57-" + RUN).equals(CacheLedger.get(player.getServer()).returnAddress(handle.cacheId())), "Address click-away did not save on the server");
+                    player.getInventory().setItem(1, ItemStack.EMPTY);
+                    player.containerMenu.setCarried(new ItemStack(Items.DIRT, 5));
+                    player.containerMenu.broadcastFullState();
+                });
+                FeedMePackages.LOGGER.info("FMP_RETURN_ADDRESS_CLICKAWAY_PASSED queued-dot-click/no-item-move");
+                returnNext();
+            }
+            case 2 -> {
+                if (ticks - returnChanged < 20 || !mc.player.containerMenu.getCarried().is(Items.DIRT)) return false;
+                var returnBar = panelLayout().returnBar();
+                click(returnBar.x() + 2, returnBar.y() + 2);
+                panelSetString("returnBuffer", "FMP@backpack-" + RUN);
+                nativeClickInventorySlot(1);
+                returnNext();
+            }
+            case 3 -> {
+                if (ticks - returnChanged < 30) return false;
+                require(mc.player.containerMenu.getCarried().isEmpty(), "Address click-away swallowed native backpack placement");
+                server(player -> {
+                    var handle = AccessGate.resolve(player).handle();
+                    require(("FMP@backpack-" + RUN).equals(CacheLedger.get(player.getServer()).returnAddress(handle.cacheId())), "Backpack click-away did not save the return address");
+                    require(player.getInventory().getItem(1).is(Items.DIRT) && player.getInventory().getItem(1).getCount() == 5,
+                            "Backpack click after address save did not place exactly five dirt");
+                    player.containerMenu.setCarried(ItemStack.EMPTY);
+                    player.containerMenu.broadcastFullState();
+                });
+                FeedMePackages.LOGGER.info("FMP_RETURN_ADDRESS_BACKPACK_PASSED native-inventory-click saved+placed-once");
+                returnNext();
+            }
+            case 4 -> {
+                if (ticks - returnChanged < 20 || !mc.player.containerMenu.getCarried().isEmpty()) return false;
+                clickCellDot(0);
+                returnNext();
+            }
+            case 5 -> {
+                if (ticks - returnChanged < 15 || panelLayout().slider() == null) return false;
+                var slider = panelLayout().slider();
+                var target = LogisticsPanel.visibleCells(mc.screen).stream()
+                        .filter(c -> c.slot() >= 6)
+                        .filter(c -> !slider.contains(c.bounds().x() + 8, c.bounds().y() + 8))
+                        .filter(c -> !panelSnapshot().cells().get(c.slot()).template().isEmpty())
+                        .findFirst().orElseThrow();
+                returnClickTargetSlot = target.slot();
+                String template = panelSnapshot().cells().get(returnClickTargetSlot).template();
+                server(player -> {
+                    player.containerMenu.setCarried(ItemVariantKey.decode(template, player.registryAccess()).stack(player.registryAccess(), 4));
+                    player.containerMenu.broadcastFullState();
+                });
+                returnNext();
+            }
+            case 6 -> {
+                if (ticks - returnChanged < 20 || mc.player.containerMenu.getCarried().isEmpty()
+                        || panelLayout().slider() == null) return false;
+                var clickTarget = LogisticsPanel.visibleCells(mc.screen).stream().filter(c -> c.slot() == returnClickTargetSlot).findFirst().orElseThrow().bounds();
+                click(clickTarget.x() + 8, clickTarget.y() + 8);
+                require(panelInt("waiting") != 0, "Slider-close click target did not send a cache deposit request");
+                returnNext();
+            }
+            case 7 -> {
+                if (ticks - returnChanged < 30) return false;
+                require(mc.player.containerMenu.getCarried().isEmpty(), "Slider-close click target deposit did not clear cursor");
+                server(player -> {
+                    var cells = CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId()).state().cells();
+                    require(cells.get(1).amount() == 100, "Slider-close click target mis-targeted slot 1");
+                    require(cells.get(2).amount() == 100 + 173, "Slider-close click target mis-targeted same-row slot 2");
+                    require(cells.get(returnClickTargetSlot).amount() == 4, "Slider-close click target did not deposit into clicked slot " + returnClickTargetSlot);
+                });
+                FeedMePackages.LOGGER.info("FMP_RETURN_SLIDER_CLICK_TARGET_PASSED click-time-slot={} deposited=4", returnClickTargetSlot);
+                returnNext();
+            }
+            case 8 -> {
+                var returnBar = panelLayout().returnBar();
+                click(returnBar.x() + 2, returnBar.y() + 2);
+                panelSetString("returnBuffer", "X".repeat(129));
+                click(panelLayout().bounds().x() - 4, panelLayout().bounds().y() + 8);
+                returnNext();
+            }
+            case 9 -> {
+                if (ticks - returnChanged < 30) return false;
+                require(panelBoolean("returnEditing"), "Rejected return address did not keep the editor open");
+                require(panelString("returnBuffer").length() == 129, "Rejected return address did not preserve the draft");
+                server(player -> require(("FMP@backpack-" + RUN).equals(CacheLedger.get(player.getServer()).returnAddress(AccessGate.resolve(player).handle().cacheId())),
+                        "Rejected return address overwrote the server address"));
+                panelSetString("returnBuffer", "FMP@enter-" + RUN);
+                keyPress(257);
+                returnNext();
+            }
+            case 10 -> {
+                if (ticks - returnChanged < 30) return false;
+                require(!panelBoolean("returnEditing"), "Enter did not close the return editor after a valid save");
+                server(player -> require(("FMP@enter-" + RUN).equals(CacheLedger.get(player.getServer()).returnAddress(AccessGate.resolve(player).handle().cacheId())),
+                        "Enter did not save the return address"));
+                var returnBar = panelLayout().returnBar();
+                click(returnBar.x() + 2, returnBar.y() + 2);
+                panelSetString("returnBuffer", "FMP@escape-" + RUN);
+                keyPress(256);
+                returnNext();
+            }
+            case 11 -> {
+                if (ticks - returnChanged < 5) return false;
+                require(!panelBoolean("returnEditing"), "Esc did not cancel return editing");
+                server(player -> {
+                    var handle = AccessGate.resolve(player).handle();
+                    require(("FMP@enter-" + RUN).equals(CacheLedger.get(player.getServer()).returnAddress(handle.cacheId())),
+                            "Esc changed the saved return address");
+                    player.containerMenu.setCarried(ItemStack.EMPTY);
+                    player.containerMenu.broadcastFullState();
+                });
+                returnNext();
+            }
+            case 12 -> {
+                if (ticks - returnChanged < 20 || !LogisticsPanel.recipeReady()) return false;
+                var returnBar = panelLayout().returnBar();
+                click(returnBar.x() + 2, returnBar.y() + 2);
+                panelSetString("returnBuffer", "FMP@closed-" + RUN);
+                var dot = LogisticsPanel.visibleCells(mc.screen).stream().filter(c -> c.slot() == 1).findFirst().orElseThrow().dot();
+                panelPress(dot.x() + 1, dot.y() + 2);
+                mc.setScreen(null);
+                returnNext();
+            }
+            case 13 -> {
+                if (ticks - returnChanged < 15) return false;
+                mc.setScreen(new InventoryScreen(mc.player));
+                returnNext();
+            }
+            case 14 -> {
+                if (ticks - returnChanged < 30 || !LogisticsPanel.recipeReady()) return false;
+                require(panelInt("selected") != 1, "Closed-window return ack replayed a queued click in the new window");
+                require(mc.player.containerMenu.getCarried().isEmpty(), "Closed-window return ack moved a cursor in the new window");
+                FeedMePackages.LOGGER.info("FMP_RETURN_ADDRESS_FAILURE_KEYS_SESSION_PASSED invalid-keeps-draft enter-save esc-cancel close-clears-queue");
+                server(player -> player.setGameMode(GameType.SURVIVAL));
+                addressQueuedClickStarted = false;
+                mc.setScreen(null);
+                returnNext();
+            }
+            case 15 -> {
+                // test.58: pressing an endpoint and releasing without moving must not rewrite the value.
+                if (ticks - returnChanged < 20) return false;
+                mc.setScreen(new InventoryScreen(mc.player));
+                returnNext();
+            }
+            case 16 -> {
+                if (ticks - returnChanged < 25 || !LogisticsPanel.recipeReady() || LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false;
+                clickCellDot(0);
+                returnNext();
+            }
+            case 17 -> {
+                if (ticks - returnChanged < 15 || panelLayout().slider() == null) return false;
+                var slider = panelLayout().slider();
+                var cell = panelSnapshot().cells().get(0);
+                int beforeMin = cell.minimum();
+                int beforeMax = cell.maximum();
+                int cap = panelSnapshot().groupCapacity();
+                int minAt = PanelLayout.sliderThumbPx(slider.x(), slider.width(), Math.max(0, beforeMin), cap);
+                int bandY = slider.y() + PanelLayout.MIN_THUMB_Y + 2;
+                nativeMouse(minAt, bandY, 0, 1);
+                require(panelBoolean("draggingSlider"), "Endpoint press did not start a drag");
+                nativeMouse(minAt, bandY, 0, 0);
+                require(!panelBoolean("draggingSlider"), "Endpoint release in place did not end the drag");
+                require(panelInt("waiting") == 0, "Press-release in place sent a threshold command");
+                server(player -> {
+                    var after = CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId()).state().cells().get(0);
+                    require(after.minimum() == beforeMin && after.maximum() == beforeMax,
+                            "Press-release in place changed the thresholds: " + beforeMin + "/" + beforeMax
+                                    + " -> " + after.minimum() + "/" + after.maximum());
+                });
+                FeedMePackages.LOGGER.info("FMP_SLIDER_PRESS_IN_PLACE_PASSED min={} max={}", beforeMin, beforeMax);
+                returnNext();
+            }
+            case 18 -> {
+                // test.58: edit the address, then immediately open a slider and drag it. The address
+                // submit must not swallow the follow-up slider interaction.
+                if (ticks - returnChanged < 20 || panelLayout().slider() == null) return false;
+                var returnBar = panelLayout().returnBar();
+                click(returnBar.x() + 2, returnBar.y() + 2);
+                panelSetString("returnBuffer", "FMP@drag-" + RUN);
+                returnNext();
+            }
+            case 19 -> {
+                if (ticks - returnChanged < 10 || !panelBoolean("returnEditing")) return false;
+                // Clicking a config dot submits the address and (after its reply) opens that slider.
+                var dot = LogisticsPanel.visibleCells(mc.screen).stream().filter(c -> c.slot() == 0).findFirst().orElseThrow().dot();
+                click(dot.x() + 1, dot.y() + 2);
+                returnNext();
+            }
+            case 20 -> {
+                if (ticks - returnChanged < 40 || !LogisticsPanel.recipeReady() || panelLayout().slider() == null) return false;
+                require(panelInt("selected") == 0, "Address submit swallowed the queued slider open");
+                var slider = panelLayout().slider();
+                int cap = panelSnapshot().groupCapacity();
+                int minAt = PanelLayout.sliderThumbPx(slider.x(), slider.width(), Math.max(0, panelSnapshot().cells().get(0).minimum()), cap);
+                int bandY = slider.y() + PanelLayout.MIN_THUMB_Y + 2;
+                // Drag to the far left so the target differs from the current value (16 groups here).
+                int targetX = PanelLayout.sliderThumbPx(slider.x(), slider.width(), 0, cap);
+                nativeMouse(minAt, bandY, 0, 1);
+                require(panelBoolean("draggingSlider"), "Address-then-drag did not start the drag");
+                nativeMouse(targetX, bandY, 0, 0);
+                require(panelInt("waiting") != 0 || panelInt("pendingThresholdSlot") == 0,
+                        "Address-then-drag dropped the threshold command");
+                returnNext();
+            }
+            case 21 -> {
+                if (ticks - returnChanged < 60) return false;
+                require(!panelBoolean("returnEditing"), "Address editor stayed open after the drag");
+                server(player -> {
+                    var handle = AccessGate.resolve(player).handle();
+                    require(("FMP@drag-" + RUN).equals(CacheLedger.get(player.getServer()).returnAddress(handle.cacheId())),
+                            "Address-then-drag did not save the address");
+                    var cell = CacheLedger.get(player.getServer()).find(handle.cacheId()).state().cells().get(0);
+                    // The drag moved the minimum to the far-left stop (0 groups = no restock).
+                    require(cell.minimum() == 0,
+                            "Address-then-drag did not apply the threshold: got " + cell.minimum() + " expected 0");
+                });
+                FeedMePackages.LOGGER.info("FMP_ADDRESS_THEN_DRAG_PASSED address-saved+threshold-applied");
+                returnNext();
+            }
+            case 22 -> {
+                // Restore creative for the following creative-screen phases.
+                server(player -> player.setGameMode(GameType.CREATIVE));
+                addressQueuedClickStarted = false;
+                returnStage = 0;
+                mc.setScreen(null);
+                return true;
+            }
+            default -> throw new IllegalStateException("Unexpected return review stage");
+        }
+        return false;
+    }
+
+    private static void returnNext() {
+        returnStage++;
+        returnChanged = ticks;
+    }
+
+    private static void nativeClickInventorySlot(int containerSlot) {
+        var mc = Minecraft.getInstance();
+        var screen = (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) mc.screen;
+        var slot = screen.getMenu().slots.stream()
+                .filter(s -> s.container == mc.player.getInventory() && s.getContainerSlot() == containerSlot)
+                .findFirst().orElseThrow();
+        double x = screen.getGuiLeft() + slot.x + 8;
+        double y = screen.getGuiTop() + slot.y + 8;
+        nativeMouse(x, y, 0, 1);
+        nativeMouse(x, y, 0, 0);
+    }
+
     private static int layoutStage, layoutIndex, layoutChanged;
     private static final Set<Integer> seenSlots = new HashSet<>();
     private static PanelLayout.Rect lastCell;
@@ -959,92 +1230,6 @@ public final class ClientReview {
         return false;
     }
     private static void nextLayout() { layoutStage++; layoutChanged = ticks; }
-    private static int clickOutsideStage, clickOutsideChanged;
-    /** Real click-routing for the test.57 "click outside" behaviours: addr blur-commit and slider
-     *  collapse, all through the actual panel event listeners and the server snapshot. */
-    private static boolean reviewClickOutside() {
-        var mc = Minecraft.getInstance();
-        if (clickOutsideStage != 0 && ticks - clickOutsideChanged < 15) return false;
-        switch (clickOutsideStage) {
-            case 0 -> {
-                // Layout review leaves the player in creative; click-outside reads inventory slots and
-                // must not create/destroy items, so return to survival with a clean cursor first.
-                server(player -> {
-                    player.setGameMode(GameType.SURVIVAL);
-                    player.containerMenu.setCarried(ItemStack.EMPTY);
-                    player.getInventory().clearContent();
-                    player.getInventory().setChanged();
-                });
-                mc.setScreen(new InventoryScreen(mc.player)); clickOutsideChanged = ticks; clickOutsideStage++;
-            }
-            case 1 -> {
-                if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false;
-                // Open cell 0's slider.
-                clickCellDot(0); clickOutsideStage++;
-            }
-            case 2 -> {
-                if (panelLayout().slider() == null) return false;
-                var snapshot = panelSnapshot(); var min = snapshot.cells().get(0).minimum(); var max = snapshot.cells().get(0).maximum();
-                // Click outside the slider but still inside the panel (e.g. a neighbouring cell body would
-                // deposit; use the panel's empty corner instead). The dot of cell 1 keeps selection when
-                // clicked, so we click a non-dot cell area to force a pure collapse without a transfer.
-                var bounds = LogisticsPanel.exclusions(mc.screen).getFirst();
-                click(bounds.x() + bounds.width() - 5, bounds.y() + bounds.height() - 5);
-                require(panelLayout().slider() == null, "Click outside the slider did not collapse it");
-                var after = panelSnapshot();
-                require(after.cells().get(0).minimum() == min && after.cells().get(0).maximum() == max,
-                        "Collapse changed the cell thresholds: " + min + "/" + max + " -> " + after.cells().get(0).minimum() + "/" + after.cells().get(0).maximum());
-                clickOutsideStage++;
-            }
-            case 3 -> {
-                // Enter address edit, type a fresh value, then click outside the panel (over vanilla
-                // inventory) and verify the draft committed and editing ended.
-                var bar = panelLayout().returnBar();
-                click(bar.x() + 4, bar.y() + bar.height() / 2);
-                require(returnEditing(), "Click on the return bar did not begin editing");
-                int codePoint = 'A'; var typed = new ScreenEvent.CharacterTyped.Pre(mc.screen, (char) codePoint, 0);
-                NeoForge.EVENT_BUS.post(typed); require(typed.isCanceled(), "Address typing leaked to the vanilla edit box");
-                clickOutsideStage++;
-            }
-            case 4 -> {
-                require(returnEditing(), "Address draft was lost before the outside click");
-                // Outside the panel: over a vanilla inventory slot of the (possibly FMP-replaced) screen.
-                var container = (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) mc.screen;
-                click(container.getGuiLeft() + 8, container.getGuiTop() + 8);
-                require(!returnEditing(), "Click outside the panel did not end address editing");
-                clickOutsideStage++;
-            }
-            case 5 -> {
-                // Let the SET_RETURN_ADDRESS land, then assert the server stored it (starts with our A).
-                var address = serverReturnAddress();
-                if (address == null) return false;
-                require(address.endsWith("A"), "Outside click did not commit the return address draft: " + address);
-                FeedMePackages.LOGGER.info("FMP_CLICK_OUTSIDE_PASSED address={} sliderCollapse=true", address);
-                clickOutsideStage++;
-            }
-            case 6 -> {
-                mc.player.closeContainer(); mc.setScreen(null);
-                return true;
-            }
-            default -> throw new IllegalStateException("Unexpected click-outside stage");
-        }
-        clickOutsideChanged = ticks; return false;
-    }
-    private static String serverReturnAddress() {
-        try {
-            var mc = Minecraft.getInstance(); var server = mc.getSingleplayerServer(); var id = mc.player.getUUID();
-            var future = CompletableFuture.supplyAsync(() -> {
-                var player = server.getPlayerList().getPlayer(id);
-                return dev.scathiard.feedmepackages.storage.CacheLedger.get(player.getServer()).returnAddress(
-                        dev.scathiard.feedmepackages.service.AccessGate.resolve(player).handle().cacheId());
-            }, server);
-            return future.join();
-        } catch (Throwable failure) { return null; }
-    }
-    private static boolean returnEditing() {
-        try { var f = LogisticsPanel.class.getDeclaredField("returnEditing"); f.setAccessible(true); return f.getBoolean(null); }
-        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
-    }
     private static void checkPanelBounds() {
         var screen = (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) Minecraft.getInstance().screen;
         var b = LogisticsPanel.exclusions(screen).getFirst();
@@ -1072,11 +1257,17 @@ public final class ClientReview {
     private static int stock(ServerPlayer player) {
         return CacheLedger.get(player.getServer()).find(AccessGate.resolve(player).handle().cacheId()).state().cells().getFirst().amount();
     }
-    private static void nativeMouse(double x, double y, int button, int action) {
+    private static void nativeMove(double x, double y) {
         try {
             var mc = Minecraft.getInstance(); var window = mc.getWindow();
             var move = net.minecraft.client.MouseHandler.class.getDeclaredMethod("onMove", long.class, double.class, double.class);
             move.setAccessible(true); move.invoke(mc.mouseHandler, window.getWindow(), x * window.getScreenWidth() / window.getGuiScaledWidth(), y * window.getScreenHeight() / window.getGuiScaledHeight());
+        } catch (ReflectiveOperationException failed) { throw new IllegalStateException("Native mouse move callback failed", failed); }
+    }
+    private static void nativeMouse(double x, double y, int button, int action) {
+        try {
+            var mc = Minecraft.getInstance(); var window = mc.getWindow();
+            nativeMove(x, y);
             var press = net.minecraft.client.MouseHandler.class.getDeclaredMethod("onPress", long.class, int.class, int.class, int.class);
             press.setAccessible(true); press.invoke(mc.mouseHandler, window.getWindow(), button, action, 0);
         } catch (ReflectiveOperationException failed) { throw new IllegalStateException("Native mouse callback failed", failed); }
@@ -1097,6 +1288,22 @@ public final class ClientReview {
         try { var f = LogisticsPanel.class.getDeclaredField("snapshot"); f.setAccessible(true); return (PanelPackets.Snapshot) f.get(null); }
         catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
     }
+    private static boolean panelBoolean(String field) {
+        try { var f = LogisticsPanel.class.getDeclaredField(field); f.setAccessible(true); return (boolean) f.get(null); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+    private static int panelInt(String field) {
+        try { var f = LogisticsPanel.class.getDeclaredField(field); f.setAccessible(true); return (int) f.get(null); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+    private static String panelString(String field) {
+        try { var f = LogisticsPanel.class.getDeclaredField(field); f.setAccessible(true); return (String) f.get(null); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
+    private static void panelSetString(String field, String value) {
+        try { var f = LogisticsPanel.class.getDeclaredField(field); f.setAccessible(true); f.set(null, value); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
     private static net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?> panelScreen() {
         return (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) Minecraft.getInstance().screen;
     }
@@ -1114,6 +1321,12 @@ public final class ClientReview {
         var release = new ScreenEvent.MouseButtonReleased.Pre(screen, x, y, 0); NeoForge.EVENT_BUS.post(release);
         if (!release.isCanceled()) screen.mouseReleased(x, y, 0);
     }
+    private static void keyPress(int keyCode) {
+        var screen = Minecraft.getInstance().screen;
+        var press = new ScreenEvent.KeyPressed.Pre(screen, keyCode, 0, 0);
+        NeoForge.EVENT_BUS.post(press);
+        if (!press.isCanceled()) screen.keyPressed(keyCode, 0, 0);
+    }
     /** Select a cache cell by its dot so its threshold slider opens, using the real panel event. */
     private static void clickCellDot(int slot) {
         var target = LogisticsPanel.visibleCells(Minecraft.getInstance().screen).stream().filter(c -> c.slot() == slot).findFirst().orElseThrow();
@@ -1129,11 +1342,10 @@ public final class ClientReview {
         var slider = panelLayout().slider(); if (slider == null) throw new IllegalStateException("Slider did not open for cell " + slot);
         int groupCap = panelSnapshot().groupCapacity();
         int minimum = Math.max(0, panelSnapshot().cells().get(slot).minimum());
-        // Hit the actual artwork endpoint (shared mapping) so press/drag math matches the rendered thumb.
-        int minAt = PanelLayout.thumbPx(slider.x(), slider.width(), minimum, groupCap);
+        int minAt = PanelLayout.sliderThumbPx(slider.x(), slider.width(), minimum, groupCap);
         int bandY = slider.y() + PanelLayout.MIN_THUMB_Y + 2;
-        int targetX = slider.x() + PanelLayout.TRACK_INSET + (slider.width() - 2 * PanelLayout.TRACK_INSET) / 2;
-        panelPress(minAt, bandY); panelDrag(targetX, bandY); panelRelease(targetX, bandY);
+        int targetX = PanelLayout.sliderThumbPx(slider.x(), slider.width(), groupCap / 2, groupCap);
+        nativeMouse(minAt, bandY, 0, 1); require(panelBoolean("draggingSlider"), "Slider minimum native press did not capture dragging"); nativeMove(targetX, bandY); nativeMouse(targetX, bandY, 0, 0); require(!panelBoolean("draggingSlider") && panelInt("waiting") != 0, "Slider release did not send threshold draft=" + panelInt("draftMinimum") + " waiting=" + panelInt("waiting"));
     }
     static void capture(String name) {
         var mc = Minecraft.getInstance(); Screenshot.grab(mc.gameDirectory, "fmp-" + RUN + "-" + name + ".png", mc.getMainRenderTarget(),

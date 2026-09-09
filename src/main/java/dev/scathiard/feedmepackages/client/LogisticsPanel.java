@@ -65,9 +65,24 @@ public final class LogisticsPanel {
     private static long serial;
     private static boolean draggingSlider;
     private static boolean draggingMaximum;
+    /** Drag origin and "did the pointer actually move" so pressing an endpoint without moving never
+     *  rewrites the stored value (both test.57 candidates had that defect). */
+    private static double dragOriginX;
+    private static boolean dragMoved;
+    /** A threshold change that could not be sent yet (an address submit was in flight). It is flushed
+     *  as soon as that command settles, so "edit the address, then drag the slider" still works. */
+    private static int pendingThresholdSlot = -1;
+    private static int pendingThresholdMinimum = -2;
+    private static int pendingThresholdMaximum = -2;
     private static int capturedButton;
+    private static int passthroughReleaseButton = -1;
     private static boolean returnEditing;
     private static String returnBuffer;
+    private static int pendingReturnSequence;
+    private static UUID pendingReturnWindow;
+    private static UUID pendingReturnSession;
+    private static String pendingReturnBuffer;
+    private static QueuedPanelClick queuedReturnClick;
     /** Client-side display prediction for the single in-flight panel intent. It only overrides one
      *  cell's rendered number during the pre-confirmation wait; it never creates item stacks, never
      *  touches the cache, backpack or cursor, and is cleared on ack/close/swap/timeout. */
@@ -102,6 +117,10 @@ public final class LogisticsPanel {
     private static boolean previewConfirmed;
 
     private record Predict(UUID window, UUID session, int slot, String variant, int sequence, long baseSerial, int result) {}
+    private enum QueuedClickKind {
+        COPY_ADDRESS, SCROLL, TOGGLE_SLOT, CLEAR_FILTER, DEPOSIT, TAKE_INVENTORY, TAKE_CURSOR
+    }
+    private record QueuedPanelClick(UUID window, UUID session, QueuedClickKind kind, int slot, int button, int row, String template) {}
     private static int draftMaximum;
     private static Component feedback;
     private static int feedbackUntil;
@@ -166,10 +185,10 @@ public final class LogisticsPanel {
                 return;
             }
             if (draggingSlider) {
-                LogisticsPanel.setDraft(event.getMouseX());
+                LogisticsPanel.updateSliderDrag(event.getMouseX(), false);
             }
             if (draggingMaximum) {
-                LogisticsPanel.setDraftMaximum(event.getMouseX());
+                LogisticsPanel.updateSliderDrag(event.getMouseX(), true);
             }
             if (waiting != 0 || draggingSlider || draggingMaximum || capturedButton >= 0 || layout.bounds().contains(event.getMouseX(), event.getMouseY())) {
                 event.setCanceled(true);
@@ -423,9 +442,17 @@ public final class LogisticsPanel {
         firstRow = 0;
         draggingSlider = false;
         draggingMaximum = false;
+        dragMoved = false;
+        pendingThresholdSlot = -1;
         capturedButton = -1;
+        passthroughReleaseButton = -1;
         returnEditing = false;
         returnBuffer = "";
+        pendingReturnSequence = 0;
+        pendingReturnWindow = null;
+        pendingReturnSession = null;
+        pendingReturnBuffer = null;
+        queuedReturnClick = null;
         draftMaximum = -1;
         tooltip = List.of();
         ICONS.clear();
@@ -440,16 +467,32 @@ public final class LogisticsPanel {
                 || !window.equals(incoming.window())) return;
         // A later processed sequence also proves earlier bounded cleanup commands were handled.
         pendingReleases.keySet().removeIf(seq -> seq <= incoming.acknowledged());
+        boolean runQueuedReturn = false;
         if (incoming.acknowledged() != 0 && incoming.acknowledged() == waiting) {
             waiting = 0;
             predict = null;
             if (incoming.result() != CacheActions.Result.OK) {
                 notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
+                if (LogisticsPanel.pendingReturnMatches(incoming)) {
+                    returnEditing = true;
+                    returnBuffer = pendingReturnBuffer == null ? "" : pendingReturnBuffer;
+                    pendingReturnSequence = 0;
+                    pendingReturnWindow = null;
+                    pendingReturnSession = null;
+                    pendingReturnBuffer = null;
+                    queuedReturnClick = null;
+                }
                 // A failed DEPOSIT does not revoke an existing preview. A failed TAKE never grants one.
                 if (!previewConfirmed && incoming.acknowledged() == cursorOperation) {
                     previewVariant = null; previewRemaining = 0;
                 }
                 cursorPending = false;
+            } else if (LogisticsPanel.pendingReturnMatches(incoming)) {
+                pendingReturnSequence = 0;
+                pendingReturnWindow = null;
+                pendingReturnSession = null;
+                pendingReturnBuffer = null;
+                runQueuedReturn = true;
             }
         }
         if (incoming.serial() <= serial) return;
@@ -487,6 +530,11 @@ public final class LogisticsPanel {
         }
         ICONS.keySet().retainAll(present);
         LogisticsPanel.updateLayout();
+        if (runQueuedReturn) {
+            LogisticsPanel.runQueuedPanelClick();
+        }
+        // A slider change queued behind an in-flight command can go out now.
+        LogisticsPanel.flushPendingThresholds();
     }
 
     private static void updateLayout() {
@@ -648,9 +696,6 @@ public final class LogisticsPanel {
             LogisticsPanel.overlay(g, x + 2, y + 4, 3, 1, color);
         }
         if (!cell.template().isEmpty() && cell.maximum() >= 0 && cell.amount() > cell.maximum() * cell.stackSize()) {
-            // Return arrow reflects the server's real dispatch evidence: red only when a carrier was
-            // actually accepted while the cell is still over its maximum; gray while it still cannot
-            // dispatch (no evidence yet, no carrier, unavailable address/network, or last check failed).
             int color = cell.returnState() == dev.scathiard.feedmepackages.logistics.ReturnService.RETURN_SENT ? -2058918 : -6909823;
             LogisticsPanel.overlay(g, x + 1, y + 1, 5, 1, color);
             LogisticsPanel.overlay(g, x + 2, y + 2, 3, 1, color);
@@ -691,8 +736,7 @@ public final class LogisticsPanel {
     }
 
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
-        // Shared with PanelLayoutTest: zero and the maximum sit exactly on the track's artwork edges.
-        return PanelLayout.thumbPx(sliderX, width, value, groupCap);
+        return PanelLayout.sliderThumbPx(sliderX, width, value, groupCap);
     }
 
     private static void panelBlit(GuiGraphics g, int sx, int sy, int sw, int sh, int u, int v, int w, int h) {
@@ -744,8 +788,7 @@ public final class LogisticsPanel {
         }
         LogisticsPanel.panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
         // Left endpoint = small triangle below the track; right endpoint = triangle above the track,
-        // so both stay draggable even when they are at the same position. Both sprites are centered on
-        // their endpoint pixel (blit at -2 spans 5px around the centre).
+        // so both stay draggable even when they are at the same position.
         LogisticsPanel.panelBlit(g, minAt - 2, y + PanelLayout.MIN_THUMB_Y, 5, 5, 0, 15, 5, 5);
         LogisticsPanel.panelBlit(g, maxAt - 2, y + PanelLayout.MAX_THUMB_Y, 5, 5, 7, 11, 5, 5);
         String minLabel = String.valueOf(minN * cell.stackSize());
@@ -839,48 +882,125 @@ public final class LogisticsPanel {
         g.pose().popPose();
     }
 
-    /** While editing the return address, a click outside the field commits the draft (only when it
-     *  actually changed) and ends editing; unchanged drafts simply close. A failed submit keeps the
-     *  draft recoverable and reports the failure, matching the Enter behaviour. The underlying click
-     *  is NOT consumed here: it continues to the panel or the vanilla screen below. */
-    private static void commitReturnOnClickOutside(double x, double y) {
-        if (!returnEditing || !LogisticsPanel.active() || layout.returnAddressContains(x, y)
-                || layout.slider() != null && layout.slider().contains(x, y)) {
-            return;
+    private enum ReturnClose {
+        NONE, CLOSED, SUBMITTED
+    }
+
+    private static ReturnClose closeReturnEditorForClick(double x, double y, PanelLayout inputLayout) {
+        if (!returnEditing || !LogisticsPanel.active() || inputLayout.returnAddressContains(x, y)) {
+            return ReturnClose.NONE;
         }
         String current = snapshot.returnAddress() == null ? "" : snapshot.returnAddress();
         if (returnBuffer.equals(current)) {
             returnEditing = false;
-            return;
+            return ReturnClose.CLOSED;
         }
-        if (LogisticsPanel.send(CacheActions.Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer)) {
+        if (LogisticsPanel.sendReturnAddressDraft()) {
             returnEditing = false;
-        } else {
-            // Keep editing so the draft is not silently lost; show why the submit failed.
-            LogisticsPanel.notice("result.stale");
+            return ReturnClose.SUBMITTED;
         }
+        LogisticsPanel.notice("result.stale");
+        return ReturnClose.NONE;
     }
 
-    /** While a slider is expanded, a click outside that slider (and outside every cell's config dot)
-     *  collapses it without changing any thresholds. Clicking another cell's dot still switches the
-     *  selection (handled by the normal press flow afterwards); clicking a cell body keeps routing to
-     *  that cell. The grid itself does not move when the slider collapses, so no re-aimed drop here. */
-    private static void collapseSliderOnClickOutside(double x, double y) {
-        if (selected < 0 || layout.slider() == null || layout.slider().contains(x, y)) {
-            return;
+    private static boolean pendingReturnMatches(PanelPackets.Snapshot incoming) {
+        return pendingReturnSequence == incoming.acknowledged()
+                && Objects.equals(pendingReturnWindow, incoming.window())
+                && Objects.equals(pendingReturnSession, incoming.session());
+    }
+
+    private static boolean collapseSliderForClick(double x, double y, PanelLayout inputLayout) {
+        if (selected < 0 || inputLayout.slider() == null || inputLayout.slider().contains(x, y)) {
+            return false;
         }
-        // While a click lands on the return bar, keep the slider open: the user is configuring the
-        // address (or still editing its draft), not dismissing the popup.
-        if (layout.returnBar() != null && layout.returnBar().contains(x, y)) {
-            return;
-        }
-        for (PanelLayout.CellBox box : layout.cells()) {
+        for (PanelLayout.CellBox box : inputLayout.cells()) {
             if (box.dot().contains(x, y)) {
-                return; // A config dot manages selection itself (switch or toggle).
+                return false;
             }
         }
         selected = -1;
         LogisticsPanel.updateLayout();
+        return true;
+    }
+
+    private static QueuedPanelClick queuedPanelClick(PanelLayout inputLayout, double x, double y, int button) {
+        if (button != 0 && button != 1 || window == null || snapshot == null || snapshot.session() == null || inputLayout.compact()) {
+            return null;
+        }
+        if (inputLayout.address().contains(x, y)) {
+            return new QueuedPanelClick(window, snapshot.session(), QueuedClickKind.COPY_ADDRESS, -1, button, -1, "");
+        }
+        PanelLayout.Rect rail = inputLayout.scrollbar();
+        if (inputLayout.totalRows() > inputLayout.visibleRows() && rail.contains(x, y)) {
+            int row = (int)Math.round((y - rail.y()) * (inputLayout.totalRows() - inputLayout.visibleRows())
+                    / Math.max(1, rail.height() - 1));
+            return new QueuedPanelClick(window, snapshot.session(), QueuedClickKind.SCROLL, -1, button, row, "");
+        }
+        if (!LogisticsPanel.active() || inputLayout.slider() != null && inputLayout.slider().contains(x, y)) {
+            return null;
+        }
+        for (PanelLayout.CellBox box : inputLayout.cells()) {
+            if (!box.bounds().contains(x, y)) continue;
+            PanelPackets.CellView cell = snapshot.cells().get(box.slot());
+            if (box.dot().contains(x, y) && !cell.template().isEmpty() && LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
+                return new QueuedPanelClick(window, snapshot.session(), QueuedClickKind.TOGGLE_SLOT, box.slot(), button, -1, cell.template());
+            }
+            if (button == 1 && Screen.hasControlDown()) {
+                return new QueuedPanelClick(window, snapshot.session(), QueuedClickKind.CLEAR_FILTER, box.slot(), button, -1, cell.template());
+            }
+            if (!LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
+                return new QueuedPanelClick(window, snapshot.session(), QueuedClickKind.DEPOSIT, box.slot(), button, -1, cell.template());
+            }
+            return new QueuedPanelClick(window, snapshot.session(), Screen.hasShiftDown() ? QueuedClickKind.TAKE_INVENTORY : QueuedClickKind.TAKE_CURSOR, box.slot(), button, -1, cell.template());
+        }
+        return null;
+    }
+
+    private static void runQueuedPanelClick() {
+        QueuedPanelClick click = queuedReturnClick;
+        queuedReturnClick = null;
+        if (click == null || window == null || !click.window().equals(window)
+                || snapshot == null || !Objects.equals(click.session(), snapshot.session())) {
+            return;
+        }
+        if (click.kind() == QueuedClickKind.COPY_ADDRESS) {
+            LogisticsPanel.MC.keyboardHandler.setClipboard(snapshot.address());
+            LogisticsPanel.notice("copied");
+            return;
+        }
+        if (click.kind() == QueuedClickKind.SCROLL) {
+            firstRow = click.row();
+            selected = -1;
+            LogisticsPanel.updateLayout();
+            return;
+        }
+        if (!LogisticsPanel.active() || click.slot() < 0 || click.slot() >= snapshot.cells().size()) {
+            return;
+        }
+        PanelPackets.CellView cell = snapshot.cells().get(click.slot());
+        if (!Objects.equals(click.template(), cell.template())) {
+            return;
+        }
+        if (click.kind() == QueuedClickKind.TOGGLE_SLOT) {
+            if (!cell.template().isEmpty() && LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
+                selected = selected == click.slot() ? -1 : click.slot();
+                LogisticsPanel.updateLayout();
+            }
+            return;
+        }
+        switch (click.kind()) {
+            case CLEAR_FILTER -> LogisticsPanel.send(CacheActions.Action.CLEAR_FILTER, click.slot(), 0, -1, "");
+            case DEPOSIT -> LogisticsPanel.send(CacheActions.Action.DEPOSIT, click.slot(), click.button() == 1 ? 1 : 0, -1, "");
+            case TAKE_INVENTORY -> {
+                ItemStack item = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
+                LogisticsPanel.send(CacheActions.Action.TAKE_INVENTORY, click.slot(), click.button() == 1 ? 1 : item.getMaxStackSize(), -1, "");
+            }
+            case TAKE_CURSOR -> {
+                ItemStack item = ICONS.getOrDefault(cell.template(), ItemStack.EMPTY);
+                LogisticsPanel.send(CacheActions.Action.TAKE_CURSOR, click.slot(), click.button() == 1 ? 1 : item.getMaxStackSize(), -1, "");
+            }
+            default -> {}
+        }
     }
 
     private static boolean press(double x, double y, int button) {
@@ -891,27 +1011,39 @@ public final class LogisticsPanel {
             capturedButton = button;
             return true;
         }
-        // Context cleanup runs BEFORE the in-panel bounds check so clicks outside the panel (over the
-        // vanilla inventory) still commit a changed return address and collapse an expanded slider,
-        // without swallowing the underlying vanilla click: the click itself keeps routing below.
-        LogisticsPanel.commitReturnOnClickOutside(x, y);
-        LogisticsPanel.collapseSliderOnClickOutside(x, y);
-        if (!layout.bounds().contains(x, y)) {
+        PanelLayout inputLayout = layout;
+        boolean insidePanel = inputLayout.bounds().contains(x, y);
+        QueuedPanelClick queuedAfterReturn = insidePanel ? LogisticsPanel.queuedPanelClick(inputLayout, x, y, button) : null;
+        ReturnClose returnClose = LogisticsPanel.closeReturnEditorForClick(x, y, inputLayout);
+        boolean collapsedSlider = LogisticsPanel.collapseSliderForClick(x, y, inputLayout);
+        if (!insidePanel) {
+            if (returnClose == ReturnClose.SUBMITTED || collapsedSlider) {
+                passthroughReleaseButton = button;
+            }
             return false;
         }
-        if (!(!returnEditing || LogisticsPanel.active() && layout.returnAddressContains(x, y))) {
-            returnEditing = false;
+        if (returnClose == ReturnClose.SUBMITTED) {
+            // The address submit is in flight. A click that lands on the slider must still start the
+            // drag immediately (the threshold command is queued until the submit settles), otherwise
+            // "edit the address, then drag" silently needed a second press.
+            if (button == 0 && LogisticsPanel.tryStartSliderDrag(inputLayout, x, y)) {
+                capturedButton = button;
+                return true;
+            }
+            queuedReturnClick = queuedAfterReturn;
+            capturedButton = button;
+            return true;
         }
         capturedButton = button;
         if (button != 0 && button != 1) {
             return true;
         }
-        if (LogisticsPanel.active() && layout.returnAddressContains(x, y)) {
+        if (LogisticsPanel.active() && inputLayout.returnAddressContains(x, y)) {
             returnEditing = true;
             returnBuffer = snapshot.returnAddress() == null ? "" : snapshot.returnAddress();
             return true;
         }
-        if (layout.compact()) {
+        if (inputLayout.compact()) {
             if (LogisticsPanel.bookOpen()) {
                 ((RecipeUpdateListener)screen).getRecipeBookComponent().toggleVisibility();
                 screen.init(MC, LogisticsPanel.screen.width, LogisticsPanel.screen.height);
@@ -921,14 +1053,14 @@ public final class LogisticsPanel {
         }
         int px = layout.bounds().x();
         int py = layout.bounds().y();
-        if (layout.address().contains(x, y)) {
+        if (inputLayout.address().contains(x, y)) {
             LogisticsPanel.MC.keyboardHandler.setClipboard(snapshot.address());
             LogisticsPanel.notice("copied");
             return true;
         }
-        PanelLayout.Rect rail = layout.scrollbar();
-        if (layout.totalRows() > layout.visibleRows() && rail.contains(x, y)) {
-            firstRow = (int) Math.round((y - rail.y()) * (layout.totalRows() - layout.visibleRows())
+        PanelLayout.Rect rail = inputLayout.scrollbar();
+        if (inputLayout.totalRows() > inputLayout.visibleRows() && rail.contains(x, y)) {
+            firstRow = (int) Math.round((y - rail.y()) * (inputLayout.totalRows() - inputLayout.visibleRows())
                     / Math.max(1, rail.height() - 1));
             selected = -1;
             LogisticsPanel.updateLayout();
@@ -937,25 +1069,12 @@ public final class LogisticsPanel {
         if (!LogisticsPanel.active()) {
             return true;
         }
-        PanelLayout.Rect slider = layout.slider();
+        PanelLayout.Rect slider = inputLayout.slider();
         if (slider != null && slider.contains(x, y)) {
-            int groupCap = snapshot.groupCapacity();
-            PanelPackets.CellView cell = snapshot.cells().get(selected);
-            int minAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.minimum() < 0 ? 0 : cell.minimum(), groupCap);
-            int maxAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.maximum() < 0 ? groupCap : cell.maximum(), groupCap);
-            // Hitboxes hug the triangles: upper band = right endpoint, lower band = left endpoint.
-            if (y >= slider.y() + PanelLayout.MIN_THUMB_Y && y < slider.y() + PanelLayout.MIN_THUMB_Y + 5 && Math.abs(x - minAt) <= 3) {
-                draggingSlider = true;
-                LogisticsPanel.setDraft(x);
-            } else if (y >= slider.y() + PanelLayout.MAX_THUMB_Y && y < slider.y() + PanelLayout.MAX_THUMB_Y + 5 && Math.abs(x - maxAt) <= 3) {
-                draggingMaximum = true;
-                LogisticsPanel.setDraftMaximum(x);
-            } else {
-                return true;
-            }
+            LogisticsPanel.tryStartSliderDrag(inputLayout, x, y);
             return true;
         }
-        for (PanelLayout.CellBox box : layout.cells()) {
+        for (PanelLayout.CellBox box : inputLayout.cells()) {
             if (!box.bounds().contains(x, y)) continue;
             PanelPackets.CellView cell = snapshot.cells().get(box.slot());
             if (box.dot().contains(x, y) && !cell.template().isEmpty() && LogisticsPanel.MC.player.containerMenu.getCarried().isEmpty()) {
@@ -981,6 +1100,10 @@ public final class LogisticsPanel {
             capturedButton = -1;
             return false;
         }
+        if (passthroughReleaseButton == button) {
+            passthroughReleaseButton = -1;
+            return false;
+        }
         if (waiting != 0) {
             if (capturedButton == button) {
                 capturedButton = -1;
@@ -988,16 +1111,30 @@ public final class LogisticsPanel {
             return true;
         }
         if (draggingSlider) {
-            LogisticsPanel.setDraft(x);
+            // "Moved" is decided by the release position too: a real drag may deliver no intermediate
+            // MouseDragged event, while press-and-release in place must keep the stored value.
+            boolean moved = dragMoved || Math.abs(x - dragOriginX) >= 2.0;
+            if (moved) {
+                LogisticsPanel.setDraft(x);
+            }
             draggingSlider = false;
-            LogisticsPanel.sendMinimum(draftMinimum);
+            dragMoved = false;
+            if (moved) {
+                LogisticsPanel.sendMinimum(draftMinimum);
+            }
             capturedButton = -1;
             return true;
         }
         if (draggingMaximum) {
-            LogisticsPanel.setDraftMaximum(x);
+            boolean moved = dragMoved || Math.abs(x - dragOriginX) >= 2.0;
+            if (moved) {
+                LogisticsPanel.setDraftMaximum(x);
+            }
             draggingMaximum = false;
-            LogisticsPanel.sendMaximum(draftMaximum);
+            dragMoved = false;
+            if (moved) {
+                LogisticsPanel.sendMaximum(draftMaximum);
+            }
             capturedButton = -1;
             return true;
         }
@@ -1042,7 +1179,7 @@ public final class LogisticsPanel {
             return true;
         }
         if (keyCode == 257 || keyCode == 335) {
-            if (LogisticsPanel.send(CacheActions.Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer)) {
+            if (LogisticsPanel.sendReturnAddressDraft()) {
                 returnEditing = false;
             } else {
                 LogisticsPanel.notice("result.stale");
@@ -1058,14 +1195,68 @@ public final class LogisticsPanel {
         return false;
     }
 
+    private static boolean sendReturnAddressDraft() {
+        String submitted = returnBuffer;
+        if (!LogisticsPanel.send(CacheActions.Action.SET_RETURN_ADDRESS, -1, -1, -1, submitted)) {
+            return false;
+        }
+        pendingReturnSequence = waiting;
+        pendingReturnWindow = window;
+        pendingReturnSession = snapshot == null ? null : snapshot.session();
+        pendingReturnBuffer = submitted;
+        return true;
+    }
+
+    /** Start dragging an endpoint when the press hit one. Records the origin and the current value;
+     *  the value only changes once the pointer really moves, so press-and-release in place keeps it. */
+    private static boolean tryStartSliderDrag(PanelLayout inputLayout, double x, double y) {
+        PanelLayout.Rect slider = inputLayout.slider();
+        if (slider == null || !slider.contains(x, y) || selected < 0 || snapshot == null
+                || selected >= snapshot.cells().size()) {
+            return false;
+        }
+        int groupCap = snapshot.groupCapacity();
+        PanelPackets.CellView cell = snapshot.cells().get(selected);
+        int minAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.minimum() < 0 ? 0 : cell.minimum(), groupCap);
+        int maxAt = LogisticsPanel.thumbPx(slider.x(), slider.width(), cell.maximum() < 0 ? groupCap : cell.maximum(), groupCap);
+        // Hitboxes hug the triangles: upper band = right endpoint, lower band = left endpoint.
+        if (y >= slider.y() + PanelLayout.MIN_THUMB_Y && y < slider.y() + PanelLayout.MIN_THUMB_Y + 5 && Math.abs(x - minAt) <= 3) {
+            draggingSlider = true;
+            dragOriginX = x;
+            dragMoved = false;
+            draftMinimum = Math.max(0, cell.minimum());
+            return true;
+        }
+        if (y >= slider.y() + PanelLayout.MAX_THUMB_Y && y < slider.y() + PanelLayout.MAX_THUMB_Y + 5 && Math.abs(x - maxAt) <= 3) {
+            draggingMaximum = true;
+            dragOriginX = x;
+            dragMoved = false;
+            draftMaximum = cell.maximum();
+            return true;
+        }
+        return false;
+    }
+
+    /** Apply a drag position only after the pointer actually moved; a press that never moves must not
+     *  rewrite the value just because the hit test rounded to a neighbouring pixel. */
+    private static void updateSliderDrag(double x, boolean maximum) {
+        if (!dragMoved && Math.abs(x - dragOriginX) < 2.0) {
+            return;
+        }
+        dragMoved = true;
+        if (maximum) {
+            LogisticsPanel.setDraftMaximum(x);
+        } else {
+            LogisticsPanel.setDraft(x);
+        }
+    }
+
     private static void setDraft(double x) {
         if (layout.slider() == null) {
             return;
         }
         int groupCap = snapshot.groupCapacity();
-        // Inverse of PanelLayout.thumbPx's rounded mapping, kept in the same class so the drag and the
-        // rendered endpoint cannot drift apart.
-        int min = PanelLayout.thumbValueAt(layout.slider().x(), layout.slider().width(), x, groupCap);
+        int min = PanelLayout.sliderValue(layout.slider().x(), layout.slider().width(), x, groupCap);
         int cap = snapshot.cells().get(selected).maximum();
         if (cap < 0) {
             cap = groupCap;
@@ -1082,15 +1273,12 @@ public final class LogisticsPanel {
         }
         int groupCap = snapshot.groupCapacity();
         double relative = x - (double)layout.slider().x() - PanelLayout.TRACK_INSET;
-        // "No return" at the true far-right pixel of the track: dragging to the track's last pixel
-        // already means the maximum (== full capacity), so the -1 zone begins exactly there and never
-        // needs the old one-pixel-later dead zone.
-        int trackW = Math.max(1, layout.slider().width() - 2 * PanelLayout.TRACK_INSET);
-        if (relative >= trackW - 1) {
+        int span = PanelLayout.sliderTrackSpan(layout.slider().width());
+        if (relative > span) {
             draftMaximum = -1;
             return;
         }
-        int max = PanelLayout.thumbValueAt(layout.slider().x(), layout.slider().width(), x, groupCap);
+        int max = PanelLayout.sliderValue(layout.slider().x(), layout.slider().width(), x, groupCap);
         int lower = snapshot.cells().get(selected).minimum();
         if (lower < 0) {
             lower = 0;
@@ -1105,7 +1293,32 @@ public final class LogisticsPanel {
         if (selected < 0 || !LogisticsPanel.active()) {
             return;
         }
+        // An address submit (or another command) may still be in flight; keep the player's change and
+        // flush it when that command settles instead of dropping it silently.
+        if (waiting != 0 || cursorPending || pendingCursorChange != null) {
+            pendingThresholdSlot = selected;
+            pendingThresholdMinimum = min;
+            pendingThresholdMaximum = max;
+            return;
+        }
         LogisticsPanel.send(CacheActions.Action.THRESHOLDS, selected, min < 0 ? 0 : min, max, "");
+    }
+
+    /** Send a slider change that had to wait for an in-flight command. Never blocks or retries by
+     *  itself; it is called whenever a pending reply settles. */
+    private static void flushPendingThresholds() {
+        if (pendingThresholdSlot < 0 || snapshot == null || !LogisticsPanel.active()
+                || waiting != 0 || cursorPending || pendingCursorChange != null) {
+            return;
+        }
+        int slot = pendingThresholdSlot;
+        int min = pendingThresholdMinimum;
+        int max = pendingThresholdMaximum;
+        pendingThresholdSlot = -1;
+        if (slot >= snapshot.cells().size() || snapshot.cells().get(slot).template().isEmpty()) {
+            return;
+        }
+        LogisticsPanel.send(CacheActions.Action.THRESHOLDS, slot, min < 0 ? 0 : min, max, "");
     }
 
     private static void sendMinimum(int minimum) {

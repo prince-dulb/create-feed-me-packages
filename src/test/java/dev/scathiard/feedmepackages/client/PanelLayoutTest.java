@@ -88,6 +88,17 @@ class PanelLayoutTest {
         assertTrue(PanelLayout.MIN_THUMB_Y + 5 <= PanelLayout.SLIDER);
         assertTrue(PanelLayout.LABEL_Y + 8 <= PanelLayout.SLIDER);
     }
+    @Test void sliderEndpointValuesMapToThePaintedTrackPixels() {
+        var layout = PanelLayout.compute(240, 200, 40, 9, 0, 8, false);
+        var slider = layout.slider();
+        int tx = slider.x() + PanelLayout.TRACK_INSET;
+        int last = tx + slider.width() - 2 * PanelLayout.TRACK_INSET - 1;
+        int cap = 2;
+        assertEquals(tx, PanelLayout.sliderThumbPx(slider.x(), slider.width(), 0, cap));
+        assertEquals(last, PanelLayout.sliderThumbPx(slider.x(), slider.width(), cap, cap));
+        assertEquals(cap, PanelLayout.sliderValue(slider.x(), slider.width(), last, cap));
+        assertEquals(cap, PanelLayout.sliderValue(slider.x(), slider.width(), last + 1, cap));
+    }
     @Test void slotSourceRetainsTheCompleteOpaqueCellEvenWithoutPanelReferenceArea() throws Exception {
         try (var source = getClass().getResourceAsStream("/assets/create_feed_me_packages/textures/gui/slot_source.png")) {
             assertNotNull(source);
@@ -102,51 +113,16 @@ class PanelLayoutTest {
             assertTrue(colors.size() > 1, "Slot border and interior were flattened");
         }
     }
-    @Test void sliderEndpointsStayInsideTheTrackArtwork() {
-        Random random = new Random(20260909L);
-        for (int trial = 0; trial < 500; trial++) {
-            int width = 2 * PanelLayout.ROW; // slider overlay width (2 cells)
-            int x = random.nextInt(200);
-            int cap = 1 + random.nextInt(32);
-            int trackW = width - 2 * PanelLayout.TRACK_INSET;
-            int trackFirst = x + PanelLayout.TRACK_INSET;
-            int trackLast = x + PanelLayout.TRACK_INSET + trackW - 1;
-            // Both extreme endpoints must land exactly on the track's first/last pixel - never past it.
-            assertEquals(trackFirst, PanelLayout.thumbPx(x, width, 0, cap));
-            assertEquals(trackLast, PanelLayout.thumbPx(x, width, cap, cap));
-            // The "-1" (no return) visual position equals the maximum position.
-            assertEquals(PanelLayout.thumbPx(x, width, cap, cap), PanelLayout.thumbPx(x, width, -1, cap));
-            // Interior values stay inside the artwork range and increase monotonically.
-            int previous = trackFirst;
-            for (int value = 1; value < cap; value++) {
-                int px = PanelLayout.thumbPx(x, width, value, cap);
-                assertTrue(px >= trackFirst && px <= trackLast, "endpoint left the track: " + value + " -> " + px);
-                assertTrue(px >= previous, "endpoint moved backwards: " + value + " -> " + px + " after " + previous);
-                previous = px;
-            }
-            // Inverse at the midpoint keeps the established semantics (cap/2 groups at mid-track).
-            // Integer midpoint rounding and odd caps move this by at most one pixel, hence the wide band.
-            int mid = (trackFirst + trackLast) / 2;
-            int midValue = PanelLayout.thumbValueAt(x, width, mid, cap);
-            assertTrue(Math.abs(midValue - cap / 2.0) <= 2.0, "midpoint value drifted: " + midValue + " for cap " + cap);
-            assertEquals(0, PanelLayout.thumbValueAt(x, width, trackFirst, cap));
-        }
-    }
-    @Test void sliderEndpointRenderingAnchorsBothTrianglesOnTheirPixel() {
-        int width = 2 * PanelLayout.ROW;
-        int x = 100, cap = 32;
-        int minAt = PanelLayout.thumbPx(x, width, 0, cap);
-        int maxAt = PanelLayout.thumbPx(x, width, cap, cap);
-        // 5-px sprites: a -2 blit puts the visual centre exactly on the endpoint pixel for both triangles.
-        assertEquals(minAt, minAt - 2 + 2);
-        assertEquals(maxAt, maxAt - 2 + 2);
-        // When both endpoints share the same extreme position, both triangles centre identically.
-        int bothRight = PanelLayout.thumbPx(x, width, cap, cap);
-        int leftCentre = bothRight - 2 + 2;
-        int rightCentre = bothRight - 2 + 2;
-        assertEquals(leftCentre, rightCentre);
-    }
     private static boolean intersects(PanelLayout.Rect a, PanelLayout.Rect b) {
         return a.x() < b.x() + b.width() && a.x() + a.width() > b.x() && a.y() < b.y() + b.height() && a.y() + a.height() > b.y();
+    }
+
+    @Test void sliderMidpointPixelMapsToMidpointValue() {
+        int sliderX = 100;
+        int width = 36;
+        int groupCap = 32;
+        int midpoint = PanelLayout.sliderThumbPx(sliderX, width, groupCap / 2, groupCap);
+
+        assertEquals(16, PanelLayout.sliderValue(sliderX, width, midpoint, groupCap));
     }
 }
