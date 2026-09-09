@@ -78,6 +78,9 @@ public final class LogisticsPanel {
      *  it would destroy an independent same-variant creative carry from another player's reservation. */
     private static String previewVariant;
     private static int previewRemaining;
+    /** Whether the TAKE_CURSOR was confirmed by the server (vs. still awaiting) so an empty carry is
+     *  never mistaken for a replaced preview during the request/confirm gap. */
+    private static boolean previewConfirmed;
 
     private record Predict(UUID window, UUID session, int slot, String variant, int sequence, long baseSerial, int result) {}
     private static int draftMaximum;
@@ -235,17 +238,21 @@ public final class LogisticsPanel {
     }
 
     private static void updatePreviewOwnership() {
-        // If the carry is no longer this client's preview variant, the preview was replaced by an
-        // independent creative-list item (or a different carry) and must no longer be withdrawn on close.
-        if (previewVariant == null || LogisticsPanel.MC.player == null) return;
+        // Only a CONFIRMED preview owns the carry. While pending, an empty carry is the normal
+        // request/confirm gap and must not invalidate ownership. Once confirmed, an emptied carry
+        // (e.g. a creative-list pickup that clears the cursor) or a different-variant carry replaces
+        // the preview, so this client's ownership is dropped and a later same/similar carry is fresh.
+        if (previewVariant == null || LogisticsPanel.MC.player == null || !previewConfirmed) return;
         var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
-        if (carried.isEmpty()) return;
+        if (carried.isEmpty()) {
+            previewRemaining = 0; previewVariant = null; previewConfirmed = false; return;
+        }
         try {
             var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
             if (!ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
-                previewRemaining = 0; previewVariant = null;
+                previewRemaining = 0; previewVariant = null; previewConfirmed = false;
             }
-        } catch (IllegalArgumentException invalid) { previewRemaining = 0; previewVariant = null; }
+        } catch (IllegalArgumentException invalid) { previewRemaining = 0; previewVariant = null; previewConfirmed = false; }
     }
 
     public static void mount(AbstractContainerScreen<?> value) {
@@ -270,7 +277,7 @@ public final class LogisticsPanel {
         // 并在光标被创造列表替换（变体变化/清空）时失效（updatePreviewOwnership），保留真实/独立/新光标。
         if (screen instanceof CreativeModeInventoryScreen && LogisticsPanel.MC.player != null) {
             var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
-            if (previewRemaining > 0 && previewVariant != null && !carried.isEmpty()) {
+            if (previewConfirmed && previewRemaining > 0 && previewVariant != null && !carried.isEmpty()) {
                 try {
                     var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
                     if (ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
@@ -282,7 +289,7 @@ public final class LogisticsPanel {
                 catch (IllegalArgumentException invalid) { /* not our variant; leave the carry untouched */ }
             }
         }
-        previewRemaining = 0; previewVariant = null;
+        previewRemaining = 0; previewVariant = null; previewConfirmed = false;
         if (window != null && MC.getConnection() != null && LogisticsPanel.MC.player != null) {
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, false), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
@@ -317,6 +324,9 @@ public final class LogisticsPanel {
             waiting = 0;
             if (incoming.result() != CacheActions.Result.OK) {
                 LogisticsPanel.notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
+                previewVariant = null; previewRemaining = 0; previewConfirmed = false;
+            } else if (previewVariant != null) {
+                previewConfirmed = true; // server confirmed the take; the carry is now our active preview
             }
         }
         if (window == null || LogisticsPanel.MC.screen != screen && !recipeOverlay.test(LogisticsPanel.MC.screen) || !window.equals(incoming.window()) || incoming.serial() <= serial) {
@@ -996,7 +1006,9 @@ public final class LogisticsPanel {
         int result = action == CacheActions.Action.TAKE_CURSOR ? Math.max(0, base - delta) : base + delta;
         predict = new Predict(window, snapshot.session(), slot, cell.template(), sequence, serial, result);
         // Track this client's local preview ownership for the withdrawn-amount bound of this take.
-        if (action == CacheActions.Action.TAKE_CURSOR) { previewVariant = cell.template(); previewRemaining = delta; }
+        // It is pending (previewConfirmed=false) until the server acknowledges; a rejected/expired take
+        // never becomes confirmed and thus never claims a later independent same-variant carry.
+        if (action == CacheActions.Action.TAKE_CURSOR) { previewVariant = cell.template(); previewRemaining = delta; previewConfirmed = false; }
     }
 
     private static Component tr(String key, Object ... args) {
