@@ -34,12 +34,7 @@ public abstract class CursorCreativePacketMixin {
     @Inject(method = "handleSetCreativeModeSlot", at = @At("RETURN"))
     private void fmp$afterCreativePlacement(ServerboundSetCreativeModeSlotPacket packet, CallbackInfo ci) {
         int before=fmp$cursorBefore; fmp$cursorBefore=-1;
-        // Only restore the FMP preview when the creative carry was emptied/dropped (slotNum<0 with an
-        // EMPTY item). A pick-up of a NEW item (itemStack non-empty) replaces the carry; restoring the old
-        // preview would overwrite the fresh independent stone — the n=3 wipe the §21 trace caught.
-        if (packet.slotNum() < 0 && !fmp$cursorDropHandled && packet.itemStack().isEmpty()) {
-            CursorReservations.restoreCreativeCursor(player);
-        }
+        if (packet.slotNum() < 0 && !fmp$cursorDropHandled) CursorReservations.restoreCreativeCursor(player);
         if (before >= 0) CursorReservations.creativeAfter(player,packet.slotNum(),before);
     }
 
