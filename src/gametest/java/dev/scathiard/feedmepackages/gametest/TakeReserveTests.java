@@ -282,6 +282,43 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    // T7b (Planner P-0096, 第十七节): the real source must actually move off the backpack. Unlike the
+    // ordinary PICKUP merge (carry→slot), the native PICKUP_ALL on an EMPTY landing slot scans same-item
+    // source slots, safeTakes and merges into the carry. Setup: cache 120, source slot with 2 real stones,
+    // an empty landing slot, no other stone. Take 8 preview, then PICKUP_ALL from the empty landing to
+    // gather the 2 real stones -> carry 10, source 0, S120/P8; FMP right-return 1 twice -> S122/P8/carry 8;
+    // left-return the whole preview -> S122/P0/carry empty. No setItem transfer or snapshot settlement.
+    @GameTest(template = "empty")
+    public static void t7bRealSourceTransferViaPickupAll(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 8); // S=120 stones
+        var player = f.player();
+        for (int i = 0; i < 36; i++) player.getInventory().setItem(i, ItemStack.EMPTY);
+        player.getInventory().setItem(0, new ItemStack(Items.STONE, 2)); // real source slot
+        helper.assertTrue(exec(f, CacheActions.Action.TAKE_CURSOR, 0, 8) == CacheActions.Result.OK
+                && player.containerMenu.getCarried().getCount() == 8 && preview(f) == 8, "Preview take failed");
+        // Locate the empty landing slot (container = player inventory, container-slot = 1) for PICKUP_ALL.
+        int emptyMenuSlot = -1;
+        for (int i = 0; i < player.containerMenu.slots.size(); i++) {
+            var slot = player.containerMenu.getSlot(i);
+            if (slot.container == player.getInventory() && slot.getContainerSlot() == 1) { emptyMenuSlot = i; break; }
+        }
+        helper.assertTrue(emptyMenuSlot >= 0 && player.getInventory().getItem(1).isEmpty(), "Empty landing slot not located");
+        player.containerMenu.clicked(emptyMenuSlot, 0, net.minecraft.world.inventory.ClickType.PICKUP_ALL, player);
+        helper.assertTrue(player.getInventory().getItem(0).isEmpty(), "PICKUP_ALL did not empty the real source slot");
+        helper.assertTrue(player.containerMenu.getCarried().getCount() == 10, "PICKUP_ALL did not merge the 2 real stones into the carry (count=" + player.containerMenu.getCarried().getCount() + ")");
+        helper.assertTrue(stock(f) == ReceiveTests.FULL - 8 && preview(f) == 8, "PICKUP_ALL must not change S/P (S=" + stock(f) + ", P=" + preview(f) + ")");
+        // FMP right-return one real stone, twice.
+        helper.assertTrue(exec(f, CacheActions.Action.DEPOSIT, 0, 1) == CacheActions.Result.OK
+                && stock(f) == ReceiveTests.FULL - 8 + 1 && player.containerMenu.getCarried().getCount() == 9, "First real return wrong (S=" + stock(f) + ")");
+        helper.assertTrue(exec(f, CacheActions.Action.DEPOSIT, 0, 1) == CacheActions.Result.OK
+                && stock(f) == ReceiveTests.FULL - 8 + 2 && player.containerMenu.getCarried().getCount() == 8, "Second real return wrong (S=" + stock(f) + ")");
+        // Left-return the whole remaining preview: releases only the preview, S stays 122 (the 2 real are already in).
+        helper.assertTrue(exec(f, CacheActions.Action.DEPOSIT, 0, 0) == CacheActions.Result.OK
+                && stock(f) == ReceiveTests.FULL - 8 + 2 && preview(f) == 0 && player.containerMenu.getCarried().isEmpty(),
+                "Preview return did not release (S=" + stock(f) + ", P=" + preview(f) + ")");
+        helper.succeed();
+    }
+
     // T13 (Planner §5 "创造专项", P-0090 §4 归因): creative preview + native placement through the
     // creative packet must charge only the cache-own transfer, and an independent same-variant pickup
     // from the creative list must NOT be mis-attributed to the cache withdrawal.

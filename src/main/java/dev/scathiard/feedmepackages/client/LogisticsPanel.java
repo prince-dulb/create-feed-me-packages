@@ -73,6 +73,12 @@ public final class LogisticsPanel {
      *  touches the cache, backpack or cursor, and is cleared on ack/close/swap/timeout. */
     private static Predict predict;
 
+    /** Local ownership of THIS client's unplaced preview, used to withdraw only our preview on close.
+     *  Never derived from snapshot.reserved (which is the sum of every player's Hold for that cell):
+     *  it would destroy an independent same-variant creative carry from another player's reservation. */
+    private static String previewVariant;
+    private static int previewRemaining;
+
     private record Predict(UUID window, UUID session, int slot, String variant, int sequence, long baseSerial, int result) {}
     private static int draftMaximum;
     private static Component feedback;
@@ -206,6 +212,7 @@ public final class LogisticsPanel {
     private static void tick() {
         boolean overlay;
         ++tick;
+        LogisticsPanel.updatePreviewOwnership();
         boolean bl = overlay = recipeOverlay.test(LogisticsPanel.MC.screen) && window != null;
         if (LogisticsPanel.MC.player == null || MC.getConnection() == null || !LogisticsPanel.supported(LogisticsPanel.MC.screen) && !overlay) {
             if (window != null) {
@@ -227,6 +234,20 @@ public final class LogisticsPanel {
         }
     }
 
+    private static void updatePreviewOwnership() {
+        // If the carry is no longer this client's preview variant, the preview was replaced by an
+        // independent creative-list item (or a different carry) and must no longer be withdrawn on close.
+        if (previewVariant == null || LogisticsPanel.MC.player == null) return;
+        var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
+        if (carried.isEmpty()) return;
+        try {
+            var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
+            if (!ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
+                previewRemaining = 0; previewVariant = null;
+            }
+        } catch (IllegalArgumentException invalid) { previewRemaining = 0; previewVariant = null; }
+    }
+
     public static void mount(AbstractContainerScreen<?> value) {
         if (screen == value && window != null) {
             return;
@@ -244,29 +265,24 @@ public final class LogisticsPanel {
     }
 
     private static void close() {
-        // 撤销仍未落位的 FMP 预览显示别名：只按预览量(reserved)撤回，保留真实/独立/新光标部分。
-        // 服务端创造性 cursor 在 TAKE_CURSOR 时只发全量包、不设服务端 carried(见 CursorReservations.cursor)，
-        // 所以服务端 cancel 看不到预览光标；此处由客户端用"光标同变体则减 reserved"精确撤回。
-        if (screen instanceof CreativeModeInventoryScreen && snapshot != null && LogisticsPanel.MC.player != null) {
+        // 只撤销本次 本地 FMP 预览（客户端维护的 previewRemaining），绝不按 snapshot.reserved(全局合计)撤。
+        // 创造光标由客户端持有：TAKE_CURSOR 只发全量包、服务端 carried 为空；本地预览量由预览关联追踪，
+        // 并在光标被创造列表替换（变体变化/清空）时失效（updatePreviewOwnership），保留真实/独立/新光标。
+        if (screen instanceof CreativeModeInventoryScreen && LogisticsPanel.MC.player != null) {
             var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
-            if (!carried.isEmpty()) {
-                String previewVariant = null; int previewAmount = 0;
-                for (var c : snapshot.cells()) {
-                    if (c.reserved() > 0 && !c.template().isEmpty()) { previewVariant = c.template(); previewAmount = c.reserved(); break; }
-                }
-                if (previewVariant != null) {
-                    try {
-                        var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
-                        if (ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
-                            ItemStack next = carried.copy();
-                            next.setCount(Math.max(0, next.getCount() - previewAmount));
-                            LogisticsPanel.MC.player.containerMenu.setCarried(next.isEmpty() ? ItemStack.EMPTY : next);
-                        }
+            if (previewRemaining > 0 && previewVariant != null && !carried.isEmpty()) {
+                try {
+                    var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
+                    if (ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
+                        ItemStack next = carried.copy();
+                        next.setCount(Math.max(0, next.getCount() - previewRemaining));
+                        LogisticsPanel.MC.player.containerMenu.setCarried(next.isEmpty() ? ItemStack.EMPTY : next);
                     }
-                    catch (IllegalArgumentException invalid) { /* not our variant; leave the carry untouched */ }
                 }
+                catch (IllegalArgumentException invalid) { /* not our variant; leave the carry untouched */ }
             }
         }
+        previewRemaining = 0; previewVariant = null;
         if (window != null && MC.getConnection() != null && LogisticsPanel.MC.player != null) {
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, false), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
@@ -979,6 +995,8 @@ public final class LogisticsPanel {
         }
         int result = action == CacheActions.Action.TAKE_CURSOR ? Math.max(0, base - delta) : base + delta;
         predict = new Predict(window, snapshot.session(), slot, cell.template(), sequence, serial, result);
+        // Track this client's local preview ownership for the withdrawn-amount bound of this take.
+        if (action == CacheActions.Action.TAKE_CURSOR) { previewVariant = cell.template(); previewRemaining = delta; }
     }
 
     private static Component tr(String key, Object ... args) {
