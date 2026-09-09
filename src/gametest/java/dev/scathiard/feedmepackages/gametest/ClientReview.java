@@ -332,7 +332,10 @@ public final class ClientReview {
                 });
                 mc.player.closeContainer(); // cancel-timing: close with unplaced preview
             }
-            case 2 -> { // cancel must not deduct; reservation cleared
+            case 2 -> { // cancel via normal player close must not deduct; reservation cleared; real client cursor state
+                var carried = mc.player.containerMenu.getCarried();
+                FeedMePackages.LOGGER.info("FMP_CREATIVE_CANCEL_CURSOR empty={} count={} item={}", carried.isEmpty(), carried.getCount(), carried);
+                require(carried.isEmpty(), "Creative cancel did not auto-clear the client cursor (count=" + carried.getCount() + ")");
                 server(player -> {
                     require(stock(player) == 3, "Creative cancel must not deduct cache");
                     require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "Creative cancel must clear reservation");
@@ -341,7 +344,6 @@ public final class ClientReview {
             }
             case 3 -> {
                 require(mc.screen instanceof CreativeModeInventoryScreen, "Creative reopen did not restore the creative screen");
-                mc.player.containerMenu.setCarried(ItemStack.EMPTY); // creative cursor persists client-side; clear for the next scenario
                 return true;
             }
             default -> throw new IllegalStateException("Unexpected creative review stage");
@@ -466,7 +468,7 @@ public final class ClientReview {
                     if (mc.player == null || mc.screen != null || mc.getSingleplayerServer() == null || mc.player.tickCount < 20) return;
                     t14Next();
                 }
-                case 16 -> { // 重载后验证：UUID/cacheId 不变、缓存56、背包64、预留0、光标空
+                case 16 -> { // 重载后服务端验证（异步 work；PASSED 在 case 17 等 work join 成功后）
                     if (ticks - t14Changed < 40) return;
                     server(player -> {
                         require(player.getUUID().equals(t14Player), "T14 reload player UUID changed");
@@ -476,10 +478,13 @@ public final class ClientReview {
                         require(CursorReservations.reserved(t14CacheId, 0) == 0, "T14 reload reservation");
                     });
                     require(mc.player.containerMenu.getCarried().isEmpty(), "T14 reload cursor");
-                    FeedMePackages.LOGGER.info("FMP_T14_PASSED {}", RUN);
                     t14Next();
                 }
-                case 17 -> { if (ticks - t14Changed < 30) return; mc.stop(); t14Next(); }
+                case 17 -> { // tick 开头已 join 异步 server work；确认后再报通过，再干净停止
+                    if (ticks - t14Changed < 40) return;
+                    FeedMePackages.LOGGER.info("FMP_T14_PASSED {}", RUN);
+                    mc.stop(); t14Next();
+                }
                 default -> {}
             }
         } catch (Throwable problem) {

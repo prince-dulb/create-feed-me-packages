@@ -133,6 +133,9 @@ public final class CursorReservations {
         HOLDS.remove(player);
         ++epoch;
         AbstractContainerMenu menu = hold.menu.get();
+        // Survival syncs away the unplaced preview by shrinking the carried stack; the creative carry is
+        // client-owned (TAKE_CURSOR sends a full-content packet without setting the server carried), so
+        // the preview alias is withdrawn client-side in LogisticsPanel.close() when the screen closes.
         if (!hold.creative && menu != null && same(menu.getCarried(), hold)) {
             ItemStack real = menu.getCarried().copy(); real.shrink(hold.amount);
             menu.setCarried(real);

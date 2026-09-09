@@ -244,6 +244,29 @@ public final class LogisticsPanel {
     }
 
     private static void close() {
+        // 撤销仍未落位的 FMP 预览显示别名：只按预览量(reserved)撤回，保留真实/独立/新光标部分。
+        // 服务端创造性 cursor 在 TAKE_CURSOR 时只发全量包、不设服务端 carried(见 CursorReservations.cursor)，
+        // 所以服务端 cancel 看不到预览光标；此处由客户端用"光标同变体则减 reserved"精确撤回。
+        if (screen instanceof CreativeModeInventoryScreen && snapshot != null && LogisticsPanel.MC.player != null) {
+            var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
+            if (!carried.isEmpty()) {
+                String previewVariant = null; int previewAmount = 0;
+                for (var c : snapshot.cells()) {
+                    if (c.reserved() > 0 && !c.template().isEmpty()) { previewVariant = c.template(); previewAmount = c.reserved(); break; }
+                }
+                if (previewVariant != null) {
+                    try {
+                        var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
+                        if (ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
+                            ItemStack next = carried.copy();
+                            next.setCount(Math.max(0, next.getCount() - previewAmount));
+                            LogisticsPanel.MC.player.containerMenu.setCarried(next.isEmpty() ? ItemStack.EMPTY : next);
+                        }
+                    }
+                    catch (IllegalArgumentException invalid) { /* not our variant; leave the carry untouched */ }
+                }
+            }
+        }
         if (window != null && MC.getConnection() != null && LogisticsPanel.MC.player != null) {
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, false), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
