@@ -10,6 +10,7 @@ import dev.scathiard.feedmepackages.storage.CacheLedger;
 import dev.scathiard.feedmepackages.storage.CacheRecord;
 import java.lang.ref.WeakReference;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.WeakHashMap;
 import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
@@ -39,13 +40,15 @@ public final class CursorReservations {
         final ItemVariantKey variant;
         final ItemStack prototype;
         final boolean creative;
+        final UUID panelSession;
         int amount;
         boolean clicking;
         int clickBefore;
-        Hold(ServerPlayer player, CacheHandle handle, int slot, ItemVariantKey variant, ItemStack prototype, int amount, boolean creative) {
+        Hold(ServerPlayer player, CacheHandle handle, int slot, ItemVariantKey variant, ItemStack prototype, int amount, boolean creative, UUID panelSession) {
             this.menu = new WeakReference<>(player.containerMenu);
             this.handle = handle; this.slot = slot; this.variant = variant;
             this.prototype = prototype.copyWithCount(1); this.amount = amount; this.creative = creative;
+            this.panelSession = panelSession;
         }
     }
     private CursorReservations() {}
@@ -73,7 +76,7 @@ public final class CursorReservations {
         int amount = Math.min(Math.min(available, intent.first()), cell.filter().stackSize());
         if (amount == 0) return CacheActions.Result.NO_SPACE;
         ItemStack prototype = cell.filter().stack(player.registryAccess(), 1);
-        Hold next = new Hold(player, handle, slot, cell.filter(), prototype, amount, creativeCursor != null);
+        Hold next = new Hold(player, handle, slot, cell.filter(), prototype, amount, creativeCursor != null, intent.session());
         HOLDS.put(player, next);
         ++epoch;
         cursor(player, next, prototype.copyWithCount(amount));
@@ -140,6 +143,15 @@ public final class CursorReservations {
             ItemStack real = menu.getCarried().copy(); real.shrink(hold.amount);
             menu.setCarried(real);
         }
+    }
+
+    /** A client that replaced/consumed its preview asks the server to release only its own panel-session
+     *  hold, so a later independent creative-source placement is not mis-debited by creativeAfter. Validated
+     *  by panel session + this player's own creative hold; never releases another player's reservation. */
+    public static void releasePreview(ServerPlayer player, UUID panelSession) {
+        Hold hold = HOLDS.get(player);
+        if (hold == null || !hold.creative || !Objects.equals(hold.panelSession, panelSession)) return;
+        cancel(player);
     }
 
     public static void validate(ServerPlayer player) {

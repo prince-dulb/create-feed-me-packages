@@ -245,14 +245,26 @@ public final class LogisticsPanel {
         if (previewVariant == null || LogisticsPanel.MC.player == null || !previewConfirmed) return;
         var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
         if (carried.isEmpty()) {
+            askServerReleasePreview();
             previewRemaining = 0; previewVariant = null; previewConfirmed = false; return;
         }
         try {
             var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
             if (!ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
+                askServerReleasePreview();
                 previewRemaining = 0; previewVariant = null; previewConfirmed = false;
             }
         } catch (IllegalArgumentException invalid) { previewRemaining = 0; previewVariant = null; previewConfirmed = false; }
+    }
+
+    /** Our preview was replaced/emptied on the creative list, so release our own panel-session hold on
+     *  the server; otherwise creativeAfter would debit a later independent same-variant placement. */
+    private static void askServerReleasePreview() {
+        if (snapshot == null || window == null || LogisticsPanel.MC.player == null) return;
+        try {
+            var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, -1, -1, -1, "");
+            PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, 0, intent, false, "", 0), (CustomPacketPayload[])new CustomPacketPayload[0]);
+        } catch (IllegalArgumentException invalid) { /* stale template; nothing to release */ }
     }
 
     public static void mount(AbstractContainerScreen<?> value) {

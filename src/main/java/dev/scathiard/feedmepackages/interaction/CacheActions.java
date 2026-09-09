@@ -18,7 +18,7 @@ import java.util.*;
 /** Server-side panel intent interpreter. A session is context, never a substitute for current access. */
 public final class CacheActions {
     private CacheActions() {}
-    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS }
+    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS, RELEASE_PREVIEW }
     public enum Result { OK, STALE, NOT_ACTIVE, INVALID_ITEM, DUPLICATE_FILTER, FILTER_OCCUPIED, NO_SPACE, INVALID_REQUEST, MISSING_MATERIAL, UNSUPPORTED_RECIPE, TOO_COMPLEX }
     public record Intent(UUID session, long revision, Action action, int slot, int first, int second, String template) {
         public Intent {
@@ -96,6 +96,12 @@ public final class CacheActions {
     private static Result execute(ServerPlayer player, Intent intent, ItemStack creativeCursor) {
         var access = AccessGate.resolve(player); var session = SESSIONS.get(player);
         if (session == null || !session.id().equals(intent.session()) || session.menu().get() != player.containerMenu) return Result.STALE;
+        // A client that replaced/consumed its preview asks to release only its own panel-session hold,
+        // before an independent creative-source placement could otherwise be mis-debited by creativeAfter.
+        if (intent.action() == Action.RELEASE_PREVIEW) {
+            CursorReservations.releasePreview(player, intent.session());
+            return Result.OK;
+        }
         // Retain enum ordinals as explicit rejection paths, never as hidden old UI capabilities.
         if (intent.action() == Action.TERMINAL_ENABLED || intent.action() == Action.CLEAR_NETWORK
                 || intent.action() == Action.SET_GHOST || intent.action() == Action.TAKE_RESIDUAL
