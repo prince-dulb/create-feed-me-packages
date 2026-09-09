@@ -181,6 +181,10 @@ public final class ClientReview {
                         if (!reviewIndependentPlace()) return;
                         independentPlaceDone = true;
                     }
+                    if (!sameTickDone) {
+                        if (!reviewSameTick()) return;
+                        sameTickDone = true;
+                    }
                     advance();
                 }
                 case 15 -> {
@@ -331,6 +335,7 @@ public final class ClientReview {
     private static boolean creativePlacementDone;
     private static boolean creativeIndependentDone;
     private static boolean independentPlaceDone;
+    private static boolean sameTickDone;
     private static boolean reviewCreativePlacement() {
         var mc = Minecraft.getInstance();
         if (creativeStage != 0 && ticks - creativeChanged < 20) return false;
@@ -638,6 +643,53 @@ public final class ClientReview {
             default -> throw new IllegalStateException("Unexpected gap2 stage");
         }
         gap2Stage++; gap2Changed = ticks; return false;
+    }
+
+    private static int gap1Stage, gap1Changed;
+    private static int gap1N;
+    // Gap1 (Planner §20): after a confirmed preview, click dirt then stone IN THE SAME TICK (no wait
+    // between, so the per-tick ownership check would miss the replacement) and close. The fresh independent
+    // stone N must still be preserved (the operation-boundary hook + releasePreview fix handle it).
+    private static boolean reviewSameTick() {
+        var mc = Minecraft.getInstance();
+        if (gap1Stage != 0 && ticks - gap1Changed < 20) return false;
+        switch (gap1Stage) {
+            case 0 -> {
+                if (!(mc.screen instanceof CreativeModeInventoryScreen)) throw new IllegalStateException("gap1 needs the creative screen");
+                if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false; // wait panel ready after the previous scenario
+                try {
+                    var select = CreativeModeInventoryScreen.class.getDeclaredMethod("selectTab", net.minecraft.world.item.CreativeModeTab.class);
+                    select.setAccessible(true);
+                    select.invoke(mc.screen, net.minecraft.core.registries.BuiltInRegistries.CREATIVE_MODE_TAB
+                            .getHolderOrThrow(net.minecraft.world.item.CreativeModeTabs.NATURAL_BLOCKS).value());
+                } catch (ReflectiveOperationException e) { throw new IllegalStateException("gap1 selectTab failed", e); }
+                clickCellBody(0);
+            }
+            case 1 -> { // wait preview 3 confirmed, then SAME-TICK dirt + stone (no tick between)
+                if (!(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 3)) return false;
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 3, "gap1 preview state"));
+                clickCreativeSlot(Items.DIRT);
+                clickCreativeSlot(Items.STONE);
+            }
+            case 2 -> { // wait independent N, verify cache 3 / reserve 0, then close
+                int n = mc.player.containerMenu.getCarried().getCount();
+                if (n <= 0) return false;
+                gap1N = n;
+                server(player -> {
+                    require(stock(player) == 3, "gap1 same-tick wrongly charged cache (S=" + stock(player) + ")");
+                    require(CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "gap1 same-tick left a reservation");
+                });
+                FeedMePackages.LOGGER.info("FMP_GAP1_SAMETICK_PASSED N={}", gap1N);
+                mc.player.closeContainer();
+            }
+            case 3 -> {
+                mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
+                mc.player.containerMenu.setCarried(ItemStack.EMPTY); // scenario handoff: next phase expects an empty carry
+                return true;
+            }
+            default -> throw new IllegalStateException("Unexpected gap1 stage");
+        }
+        gap1Stage++; gap1Changed = ticks; return false;
     }
 
     private static void creativeHotbarClick() {

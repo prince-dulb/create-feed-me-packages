@@ -188,6 +188,33 @@ public final class LogisticsPanel {
                 LogisticsPanel.close();
             }
         });
+        // Operation boundary: if the player clicks a creative LIST slot while this client still holds an
+        // FMP preview, release that preview to the server BEFORE the native pick-up replaces the carry.
+        // Otherwise the server's restoreCreativeCursor re-applies the old preview after the clear, wiping
+        // the fresh independent stone (the n=3 trace). This fires on the pick-up edge, not on a later tick.
+        bus.addListener((ScreenEvent.MouseButtonPressed.Pre event) -> {
+            if (screen instanceof CreativeModeInventoryScreen && previewRemaining > 0 && previewVariant != null
+                    && onCreativeListSlot(event.getMouseX(), event.getMouseY())) {
+                askServerReleasePreview();
+                // Same-tick replacement: the pick-up replaces the carry, so the local preview ownership is
+                // invalidated here (not only on a later tick) or a close in the same tick would still debit it.
+                previewRemaining = 0; previewConfirmed = false; previewVariant = null;
+            }
+        });
+    }
+
+    private static boolean onCreativeListSlot(double x, double y) {
+        if (!(screen instanceof CreativeModeInventoryScreen creative)) return false;
+        try {
+            var field = CreativeModeInventoryScreen.class.getDeclaredField("CONTAINER"); field.setAccessible(true);
+            var listContainer = (net.minecraft.world.Container) field.get(null);
+            for (var slot : creative.getMenu().slots) {
+                if (slot.container == listContainer
+                        && x >= creative.getGuiLeft() + slot.x && x < creative.getGuiLeft() + slot.x + 16
+                        && y >= creative.getGuiTop() + slot.y && y < creative.getGuiTop() + slot.y + 16) return true;
+            }
+        } catch (ReflectiveOperationException ignored) { }
+        return false;
     }
 
     private static boolean supported(Screen candidate) {
@@ -288,6 +315,8 @@ public final class LogisticsPanel {
     }
 
     private static void close() {
+        dev.scathiard.feedmepackages.FeedMePackages.LOGGER.info("FMP_CLOSE_PREVIEW confirmed={} variant={} remaining={} carry={}",
+                previewConfirmed, previewVariant, previewRemaining, LogisticsPanel.MC.player == null ? null : LogisticsPanel.MC.player.containerMenu.getCarried());
         // 只撤销本次 本地 FMP 预览（客户端维护的 previewRemaining），绝不按 snapshot.reserved(全局合计)撤。
         // 创造光标由客户端持有：TAKE_CURSOR 只发全量包、服务端 carried 为空；本地预览量由预览关联追踪，
         // 并在光标被创造列表替换（变体变化/清空）时失效（updatePreviewOwnership），保留真实/独立/新光标。
