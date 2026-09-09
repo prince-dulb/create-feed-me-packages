@@ -168,7 +168,12 @@ public final class ClientReview {
                     advance();
                 }
                 case 14 -> {
-                    if (ticks - changed < 20 || !reviewCreativePlacement()) return;
+                    if (ticks - changed < 20) return;
+                    if (!creativePlacementDone) {
+                        if (!reviewCreativePlacement()) return;
+                        creativePlacementDone = true;
+                    }
+                    if (!reviewCreativeIndependentSource()) return;
                     advance();
                 }
                 case 15 -> {
@@ -316,6 +321,7 @@ public final class ClientReview {
         return (PanelLayout) field.get(null);
     }
     private static int creativeStage, creativeChanged;
+    private static boolean creativePlacementDone;
     private static boolean reviewCreativePlacement() {
         var mc = Minecraft.getInstance();
         if (creativeStage != 0 && ticks - creativeChanged < 20) return false;
@@ -498,6 +504,74 @@ public final class ClientReview {
     private static void t14Next() { t14Stage++; t14Changed = ticks; }
     private static int inventoryStones(ServerPlayer player) {
         return player.getInventory().items.stream().filter(s -> s.is(Items.STONE)).mapToInt(ItemStack::getCount).sum();
+    }
+
+    // T13 (Planner §17/18): an independent creative-source same-variant carry must NOT be withdrawn by
+    // an old FMP preview ownership. FMP preview 3 → left-click creative-list dirt (clears the carry) →
+    // left-click creative-list stone (fresh independent N) → close reopen → N kept, cache 3, reserve 0.
+    private static int t13Stage, t13Changed;
+    private static int t13Independent;
+    private static boolean reviewCreativeIndependentSource() {
+        var mc = Minecraft.getInstance();
+        if (t13Stage != 0 && ticks - t13Changed < 20) return false;
+        switch (t13Stage) {
+            case 0 -> { // select NATURAL_BLOCKS, then FMP take preview 3 (cache 3)
+                if (!(mc.screen instanceof CreativeModeInventoryScreen)) throw new IllegalStateException("T13 needs the creative screen");
+                try {
+                    var select = CreativeModeInventoryScreen.class.getDeclaredMethod("selectTab", net.minecraft.world.item.CreativeModeTab.class);
+                    select.setAccessible(true);
+                    select.invoke(mc.screen, net.minecraft.core.registries.BuiltInRegistries.CREATIVE_MODE_TAB
+                            .getHolderOrThrow(net.minecraft.world.item.CreativeModeTabs.NATURAL_BLOCKS).value());
+                } catch (ReflectiveOperationException e) { throw new IllegalStateException("T13 selectTab failed", e); }
+                clickCellBody(0);
+            }
+            case 1 -> { // wait carry == 3 preview
+                if (!(mc.player.containerMenu.getCarried().is(Items.STONE) && mc.player.containerMenu.getCarried().getCount() == 3)) return false;
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 3, "T13 preview state"));
+                clickCreativeSlot(Items.DIRT); // clears the carry (empty) -> ownership invalidated
+            }
+            case 2 -> { // wait carry empty (dirt cleared); then grab a fresh independent stone
+                if (!mc.player.containerMenu.getCarried().isEmpty()) return false;
+                clickCreativeSlot(Items.STONE);
+            }
+            case 3 -> { // wait fresh independent stone N on the carry
+                var cs = (mc.screen instanceof CreativeModeInventoryScreen) ? (CreativeModeInventoryScreen) mc.screen : null;
+                FeedMePackages.LOGGER.info("FMP_T13_DIAG mcCarry={} creativeCarry={}",
+                        mc.player.containerMenu.getCarried(), cs == null ? null : cs.getMenu().getCarried());
+                int n = mc.player.containerMenu.getCarried().getCount();
+                if (n <= 0) return false;
+                t13Independent = n;
+                mc.player.closeContainer(); // normal close (independent stone returns to inventory)
+            }
+            case 4 -> { // server confirm + reopen the creative screen
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0,
+                        "T13 must not deduct cache or leave a reservation"));
+                FeedMePackages.LOGGER.info("FMP_T13_INDEPENDENT_PASSED N={}", t13Independent);
+                mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
+            }
+            case 5 -> {
+                if (!(mc.screen instanceof CreativeModeInventoryScreen)) return false;
+                int n = mc.player.containerMenu.getCarried().getCount();
+                require(n == t13Independent,
+                        "T13 independent stone not preserved on reopen carry (n=" + n + ", expected " + t13Independent + ")");
+                mc.player.containerMenu.setCarried(ItemStack.EMPTY); // scenario handoff: T13 verified the preserve; clear for next phase
+                return true;
+            }
+            default -> throw new IllegalStateException("Unexpected T13 stage");
+        }
+        t13Stage++; t13Changed = ticks; return false;
+    }
+    private static void t13Next() { t13Stage++; t13Changed = ticks; }
+    private static void clickCreativeSlot(net.minecraft.world.item.Item item) {
+        var mc = Minecraft.getInstance();
+        try {
+            var creative = (CreativeModeInventoryScreen) mc.screen;
+            var field = CreativeModeInventoryScreen.class.getDeclaredField("CONTAINER"); field.setAccessible(true);
+            var listContainer = (net.minecraft.world.Container) field.get(null);
+            var picker = creative.getMenu();
+            var slot = picker.slots.stream().filter(s -> s.container == listContainer && s.getItem().is(item)).findFirst().orElseThrow();
+            click(creative.getGuiLeft() + slot.x + 8, creative.getGuiTop() + slot.y + 8);
+        } catch (ReflectiveOperationException e) { throw new IllegalStateException("T13 click slot failed for " + item, e); }
     }
 
     private static void creativeHotbarClick() {
