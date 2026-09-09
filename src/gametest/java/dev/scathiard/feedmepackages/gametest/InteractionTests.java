@@ -361,6 +361,27 @@ public final class InteractionTests {
     }
 
     @GameTest(template = "empty")
+    public static void releasePreviewAcceptedForCreativeHold(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        TestPlayers.nativePackets(player);
+        player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(player, new PanelPackets.Query(window, player.containerMenu.containerId, true));
+        // Real creative TAKE through the wire (creativeCursor=true) -> creative hold P=1, S stays 3.
+        var take = new CacheActions.Intent(view.session(), view.revision(), Action.TAKE_CURSOR, 0, 1, -1, "");
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0)).result() == Result.OK
+                && stock(player, 0) == 3 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1,
+                "Creative take through wire failed");
+        // RELEASE_PREVIEW release of the creative hold -> reserved 0, cache stays 3.
+        var rel = new PanelPackets.Command(window, 2, new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, -1, -1, ""), false, "", 0);
+        helper.assertTrue(PanelNetwork.command(player, rel).result() == Result.OK
+                && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0
+                && stock(player, 0) == 3, "Creative hold release failed to clear the reservation");
+        player.containerMenu.setCarried(ItemStack.EMPTY);
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
     public static void panelWireIsBoundedAndRoundTripsLargeTemplates(GameTestHelper helper) {
         var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack()); var access = AccessGate.resolve(player);
         var ledger = CacheLedger.get(player.getServer()); var before = ledger.find(access.handle().cacheId());
