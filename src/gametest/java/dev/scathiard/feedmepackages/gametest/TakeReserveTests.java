@@ -376,6 +376,89 @@ public final class TakeReserveTests {
         helper.succeed();
     }
 
+    @GameTest(template = "empty")
+    public static void nativeClickMatrixConservesPreview(GameTestHelper helper) {
+        for (String action : new String[]{"drag", "number", "slotThrow", "outsideRight", "outsideLeft"}) {
+            var player = realCursorPlayer(helper);
+            var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer());
+            long droppedBefore = droppedStones(helper);
+            var menu = player.containerMenu;
+            switch (action) {
+                case "drag" -> {
+                    menu.clicked(-999, 0, net.minecraft.world.inventory.ClickType.QUICK_CRAFT, player);
+                    menu.clicked(36, 1, net.minecraft.world.inventory.ClickType.QUICK_CRAFT, player);
+                    menu.clicked(37, 1, net.minecraft.world.inventory.ClickType.QUICK_CRAFT, player);
+                    menu.clicked(-999, 2, net.minecraft.world.inventory.ClickType.QUICK_CRAFT, player);
+                    helper.assertTrue(player.getInventory().getItem(0).getCount() == 4 && player.getInventory().getItem(1).getCount() == 4, "native drag distribution");
+                }
+                case "number" -> menu.clicked(36, 1, net.minecraft.world.inventory.ClickType.SWAP, player);
+                case "slotThrow" -> menu.clicked(36, 0, net.minecraft.world.inventory.ClickType.THROW, player);
+                case "outsideRight" -> menu.clicked(-999, 1, net.minecraft.world.inventory.ClickType.PICKUP, player);
+                case "outsideLeft" -> menu.clicked(-999, 0, net.minecraft.world.inventory.ClickType.PICKUP, player);
+            }
+            int moved = switch (action) { case "drag", "outsideLeft" -> 8; case "outsideRight" -> 1; default -> 0; };
+            helper.assertTrue(ledger.find(access.handle().cacheId()).state().cells().getFirst().amount() == 120-moved
+                    && CursorReservations.reserved(access.handle().cacheId(), 0) == 8-moved, "native " + action + " wrong settlement");
+            player.connection.handleContainerClose(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(0));
+            int inventory = player.getInventory().countItem(Items.STONE);
+            long dropped = droppedStones(helper)-droppedBefore;
+            helper.assertTrue(inventory+dropped == moved && menu.getCarried().isEmpty()
+                    && CursorReservations.reserved(access.handle().cacheId(), 0) == 0, "native " + action + " lost/duplicated after close");
+        }
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void partialPlacementSurvivesActualLifecycleEntrypoints(GameTestHelper helper) {
+        var rules = helper.getLevel().getGameRules(); boolean oldKeep = rules.getBoolean(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY);
+        try {
+            for (String action : new String[]{"close", "menu", "unwear", "network", "cache", "logoutEvent", "deathKeep", "deathDrop"}) {
+                var player = realCursorPlayer(helper); var oldMenu = player.containerMenu;
+                var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer());
+                for (int i=0; i<3; i++) oldMenu.clicked(36, 1, net.minecraft.world.inventory.ClickType.PICKUP, player);
+                long droppedBefore = droppedStones(helper);
+                switch (action) {
+                    case "close" -> player.connection.handleContainerClose(new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(0));
+                    case "menu" -> player.openMenu(new net.minecraft.world.SimpleMenuProvider(
+                            (id, inventory, owner) -> net.minecraft.world.inventory.ChestMenu.oneRow(id, inventory), net.minecraft.network.chat.Component.literal("lifecycle")));
+                    case "unwear" -> TestPlayers.necklace(player).setStackInSlot(0, ItemStack.EMPTY);
+                    case "network" -> TestPlayers.necklace(player).getStackInSlot(0).set(FmpRegistries.NETWORK.get(), java.util.UUID.randomUUID());
+                    case "cache" -> TestPlayers.necklace(player).setStackInSlot(0, FmpRegistries.PENDANT.toStack());
+                    case "logoutEvent" -> net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerEvent.PlayerLoggedOutEvent(player));
+                    default -> {
+                        rules.getRule(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY).set(action.equals("deathKeep"), player.getServer());
+                        player.setHealth(0); player.die(player.damageSources().generic());
+                    }
+                }
+                // This is the actual registered player-tick entrypoint, not a direct cancel substitute.
+                net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.tick.PlayerTickEvent.Post(player));
+                helper.assertTrue(ledger.find(access.handle().cacheId()).state().cells().getFirst().amount() == 117
+                        && CursorReservations.reserved(access.handle().cacheId(), 0) == 0 && oldMenu.getCarried().isEmpty(), "lifecycle " + action + " lost preview/stock");
+                helper.assertTrue(player.getInventory().countItem(Items.STONE) + droppedStones(helper)-droppedBefore == 3,
+                        "lifecycle " + action + " rolled back or duplicated placed3");
+            }
+        } finally { rules.getRule(net.minecraft.world.level.GameRules.RULE_KEEPINVENTORY).set(oldKeep, helper.getLevel().getServer()); }
+        helper.succeed();
+    }
+
+    private static ServerPlayer realCursorPlayer(GameTestHelper helper) {
+        var player = TestPlayers.real(helper, java.util.UUID.randomUUID()); TestPlayers.nativePackets(player);
+        TestPlayers.necklace(player).setStackInSlot(0, FmpRegistries.PENDANT.toStack());
+        var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer()); var record = ledger.find(access.handle().cacheId());
+        var key = dev.scathiard.feedmepackages.item.ItemVariantKey.of(new ItemStack(Items.STONE), player.registryAccess());
+        var edit = record.state().edit(); edit.filter(0, key); edit.insert(0, key, 120);
+        ledger.replace(access.handle(), record.state().revision(), record.withState(edit.finish()));
+        var view = CacheActions.open(player);
+        if (CacheActions.execute(player, new CacheActions.Intent(view.session(), view.record().state().revision(), CacheActions.Action.TAKE_CURSOR, 0, 8, -1, "")) != CacheActions.Result.OK)
+            throw new IllegalStateException("real player preview setup");
+        return player;
+    }
+    private static long droppedStones(GameTestHelper helper) {
+        long count=0;
+        for (var entity : helper.getLevel().getAllEntities()) if (entity instanceof net.minecraft.world.entity.item.ItemEntity item && item.getItem().is(Items.STONE)) count+=item.getItem().getCount();
+        return count;
+    }
+
     private static net.minecraft.world.item.crafting.RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>
             recipe(ServerPlayer player, String id) {
         return (net.minecraft.world.item.crafting.RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>)

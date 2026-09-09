@@ -18,7 +18,7 @@ import java.util.*;
 /** Server-side panel intent interpreter. A session is context, never a substitute for current access. */
 public final class CacheActions {
     private CacheActions() {}
-    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS, RELEASE_PREVIEW }
+    public enum Action { DEPOSIT, TAKE_CURSOR, TAKE_INVENTORY, SET_GHOST, CLEAR_FILTER, THRESHOLDS, RESET_REQUEST, PREFERENCE, TERMINAL_ENABLED, CLEAR_NETWORK, TAKE_RESIDUAL, FILL_RECIPE, SET_RETURN_ADDRESS, RELEASE_PREVIEW, CREATIVE_BEGIN, CREATIVE_END }
     public enum Result { OK, STALE, NOT_ACTIVE, INVALID_ITEM, DUPLICATE_FILTER, FILTER_OCCUPIED, NO_SPACE, INVALID_REQUEST, MISSING_MATERIAL, UNSUPPORTED_RECIPE, TOO_COMPLEX }
     public record Intent(UUID session, long revision, Action action, int slot, int first, int second, String template) {
         public Intent {
@@ -182,17 +182,15 @@ public final class CacheActions {
         var replacement = before.withState(edit.finish());
         // Only original menu/inventory setters follow this commit; no external insert/drop callbacks.
         ledger.replace(access.handle(), before.state().revision(), replacement);
-        if (nextCursor != null) cursor(player, nextCursor, creativeCursor != null);
+        if (nextCursor != null) cursor(player, nextCursor, creativeCursor != null, intent.session(), requestSeq);
         if (inventoryPlan != null) inventoryPlan.commit(player.getInventory());
         player.containerMenu.broadcastChanges(); return Result.OK;
     }
 
-    private static void cursor(ServerPlayer player, ItemStack next, boolean creative) {
+    private static void cursor(ServerPlayer player, ItemStack next, boolean creative, UUID session, int sequence) {
         var menu = player.containerMenu;
         if (!creative) { menu.setCarried(next); return; }
-        // The full-content packet is the native creative cursor update. Do not also persist it.
-        player.connection.send(new net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket(
-                menu.containerId, menu.incrementStateId(), menu.getItems(), next));
+        dev.scathiard.feedmepackages.network.PanelNetwork.sendCursor(player, session, 0, next, 0);
     }
 
     @SuppressWarnings("unchecked")

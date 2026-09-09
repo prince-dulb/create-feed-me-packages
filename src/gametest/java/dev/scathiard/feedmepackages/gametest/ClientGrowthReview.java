@@ -76,10 +76,10 @@ final class ClientGrowthReview {
                         && result.getHoverName().getString().equals("Assembly review"), "Real result click failed to sync its usable result and original components");
                 server(player -> {
                     var ledger = CacheLedger.get(player.getServer()); var record = ledger.find(cacheId); var menu = player.containerMenu;
-                    require(record.state().level() == 2 && record.state().cells().getFirst().amount() == 37, "Client manufacturing lost stock or applied the wrong level");
+                    require(record.state().level() == (cycle == 2 ? 3 : 2) && record.state().cells().getFirst().amount() == 37, "Client manufacturing lost stock or applied the wrong level");
                     require(menu.getSlot(0).getItem().is(FmpRegistries.ASSEMBLY_TEMPLATE.get()) && menu.getSlot(1).getItem().isEmpty() && menu.getSlot(2).getItem().isEmpty(), "Client manufacturing did not consume exactly its two inputs");
                     if (cycle > 0) require(player.getUUID().equals(record.owner()) && cacheId.equals(ledger.personal(player.getUUID())), "Client personalization did not commit ownership");
-                    if (cycle == 2) require(player.getUUID().equals(record.owner()) && record.state().level() == 2, "Client private upgrade did not commit to its owner");
+                    if (cycle == 2) require(player.getUUID().equals(record.owner()) && record.state().level() == 3, "Client private upgrade did not commit to its owner");
                 }); clickSlot(31); next();
             }
             case 5 -> { if (!waited(15)) break; mc.player.closeContainer(); next(); }
@@ -96,7 +96,7 @@ final class ClientGrowthReview {
                 else {
                     server(player -> {
                         var pendant = player.getInventory().removeItemNoUpdate(0);
-                        require(CacheLedger.get(player.getServer()).find(cacheId).state().level() == 2, "Inventory-only grant activated before wear");
+                        require(CacheLedger.get(player.getServer()).find(cacheId).state().level() == 3, "Owner smithing must upgrade immediately without waiting for wear");
                         CuriosApi.getCuriosInventory(player).orElseThrow().getStacksHandler("necklace").orElseThrow().getStacks().setStackInSlot(0, pendant);
                     }); next();
                 }

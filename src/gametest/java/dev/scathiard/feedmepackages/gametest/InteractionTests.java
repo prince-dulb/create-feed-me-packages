@@ -71,7 +71,10 @@ public final class InteractionTests {
     public static void singleDepositUsesLegalServerAmountInSurvivalAndCreative(GameTestHelper helper) {
         for (boolean creative : new boolean[]{false, true}) {
             var f = ReceiveTests.setup(helper, ReceiveTests.FULL - 2); var player = f.player(); var sent = TestPlayers.nativePackets(player);
-            if (creative) player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+            if (creative) {
+                player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+                PanelNetwork.query(player, new PanelPackets.Query(UUID.randomUUID(), 0, true));
+            }
             var source = new ItemStack(Items.STONE, 32);
             for (int step = 0; step < 3; step++) {
                 if (!creative) player.containerMenu.setCarried(source.copy());
@@ -81,9 +84,9 @@ public final class InteractionTests {
                 if (step < 2) {
                     source.shrink(1);
                     if (creative) {
-                        var packet = sent.stream().filter(p -> p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket)
-                                .map(p -> (net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket)p).toList().getLast();
-                        helper.assertTrue(ItemStack.matches(packet.getCarriedItem(), source) && player.containerMenu.getCarried().isEmpty(), "Creative single deposit duplicated or lost cursor ownership");
+                        var packet = cursorUpdate(sent);
+                        var returned = ItemVariantKey.decode(packet.template(), player.registryAccess()).stack(player.registryAccess(), packet.count());
+                        helper.assertTrue(ItemStack.matches(returned, source) && player.containerMenu.getCarried().isEmpty(), "Creative single deposit duplicated or lost cursor ownership");
                     } else helper.assertTrue(ItemStack.matches(player.containerMenu.getCarried(), source), "Survival single deposit changed the wrong quantity");
                     var replay = creative ? CacheActions.executeCreative(player, command, f.key().encoded(), source.getCount()) : CacheActions.execute(player, command);
                     helper.assertTrue(replay == Result.STALE, "Single deposit replay applied twice");
@@ -292,6 +295,8 @@ public final class InteractionTests {
         var player = TestPlayers.create(helper, FmpRegistries.PENDANT.toStack());
         var sent = TestPlayers.nativePackets(player);
         var key = ItemVariantKey.of(new ItemStack(Items.STONE), player.registryAccess()).encoded();
+        UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(player, new PanelPackets.Query(window, 0, true));
         var deposit = intent(player, Action.DEPOSIT, 0, 0, -1, "");
         player.getAbilities().instabuild = false;
         helper.assertTrue(CacheActions.executeCreative(player, deposit, key, 32) == Result.INVALID_REQUEST && stock(player, 0) == 0, "Survival forged a creative item source");
@@ -303,12 +308,13 @@ public final class InteractionTests {
         var take = intent(player, Action.TAKE_CURSOR, 0, 16, -1, "");
         helper.assertTrue(CacheActions.execute(player, take) == Result.INVALID_REQUEST && stock(player, 0) == 32,
                 "Creative caller bypassed native cursor ownership with a survival-shaped command");
-        helper.assertTrue(CacheActions.executeCreative(player, take, "", 0) == Result.OK && stock(player, 0) == 32
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0)).result() == Result.OK && stock(player, 0) == 32
                 && player.containerMenu.getCarried().isEmpty(), "Creative withdrawal created another server-owned cursor");
-        var packet = sent.stream().filter(p -> p instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket)
-                .map(p -> (net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket)p).toList().getLast();
-        helper.assertTrue(packet.getCarriedItem().is(Items.STONE) && packet.getCarriedItem().getCount() == 16,
-                "Creative withdrawal was not handed to the native client cursor");
+        var packet = cursorUpdate(sent);
+        helper.assertTrue(packet.count() == 16 && packet.remaining() == 16 && packet.takeSequence() == 1
+                && packet.operationSequence() == 1 && packet.window().equals(window)
+                && ItemVariantKey.decode(packet.template(), player.registryAccess()).stack(player.registryAccess(), 1).is(Items.STONE),
+                "Creative withdrawal did not carry exact grant identity and amount");
         helper.succeed();
     }
 
@@ -438,6 +444,106 @@ public final class InteractionTests {
                 && stock(player, 0) == 3, "Replay RELEASE B was not STALE");
         player.containerMenu.setCarried(ItemStack.EMPTY);
         helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void creativeMixedSourceAndIndependentOperations(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        TestPlayers.nativePackets(player); player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(player, new PanelPackets.Query(window, 0, true));
+        var take = new CacheActions.Intent(view.session(), view.revision(), Action.TAKE_CURSOR, 0, 3, -1, "");
+        helper.assertTrue(PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0)).result() == Result.OK, "take");
+        String stone = ItemVariantKey.of(new ItemStack(Items.STONE), player.registryAccess()).encoded();
+        // Actual independent creative-list drop must not consume the still-held preview.
+        helper.assertTrue(creativeOp(player, window, view, 2, Action.CREATIVE_BEGIN, 3, 1, 2, stone) == Result.OK, "independent begin");
+        player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(-1, new ItemStack(Items.STONE)));
+        helper.assertTrue(creativeOp(player, window, view, 3, Action.CREATIVE_END, 3, 1, 2, stone) == Result.OK && stock(player, 0) == 3, "list drop charged cache");
+        // Same-item list increment: P3 + independent1. END changes no cache stock or preview count.
+        helper.assertTrue(creativeOp(player, window, view, 4, Action.CREATIVE_BEGIN, 3, 1, 1, stone) == Result.OK, "list begin");
+        helper.assertTrue(creativeOp(player, window, view, 5, Action.CREATIVE_END, 4, 1, 4, stone) == Result.OK, "list end");
+        helper.assertTrue(dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 3, "increment released P3");
+        // First right placement transfers only real1; a second placement transfers preview1.
+        helper.assertTrue(creativeOp(player, window, view, 6, Action.CREATIVE_BEGIN, 4, 1, 0, stone) == Result.OK, "place begin");
+        player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(36, new ItemStack(Items.STONE)));
+        helper.assertTrue(creativeOp(player, window, view, 7, Action.CREATIVE_END, 3, 1, 6, stone) == Result.OK && stock(player, 0) == 3, "real1 charged cache");
+        helper.assertTrue(creativeOp(player, window, view, 8, Action.CREATIVE_BEGIN, 3, 1, 0, stone) == Result.OK, "second begin");
+        player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(36, new ItemStack(Items.STONE, 2)));
+        helper.assertTrue(creativeOp(player, window, view, 9, Action.CREATIVE_END, 2, 1, 8, stone) == Result.OK && stock(player, 0) == 2, "preview1 not charged");
+        // Local list shrink releases another alias; it does not destroy its cache stock.
+        helper.assertTrue(creativeOp(player, window, view, 10, Action.CREATIVE_BEGIN, 2, 1, 1, stone) == Result.OK, "shrink begin");
+        helper.assertTrue(creativeOp(player, window, view, 11, Action.CREATIVE_END, 1, 1, 10, stone) == Result.OK
+                && stock(player, 0) == 2 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 1, "shrink lost stock");
+        CacheActions.close(player);
+        helper.assertTrue(stock(player, 0) == 2 && player.getInventory().getItem(0).getCount() == 2, "mixed conservation");
+        helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void rejectedNativeCreativeDropRestoresOnlyItsOperation(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        var sent = TestPlayers.nativePackets(player); player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        // Exhaust the vanilla drop budget through its actual packet handler.
+        for (int i = 0; i < 11; i++) player.connection.handleSetCreativeModeSlot(
+                new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(-1, new ItemStack(Items.DIRT)));
+        UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(player, new PanelPackets.Query(window, 0, true));
+        var take = new CacheActions.Intent(view.session(), view.revision(), Action.TAKE_CURSOR, 0, 3, -1, "");
+        PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0));
+        String stone = f.key().encoded();
+        helper.assertTrue(creativeOp(player, window, view, 2, Action.CREATIVE_BEGIN, 3, 1, 0, stone) == Result.OK, "drop begin");
+        long before = java.util.stream.StreamSupport.stream(helper.getLevel().getAllEntities().spliterator(), false)
+                .filter(e -> e instanceof net.minecraft.world.entity.item.ItemEntity item && item.getItem().is(Items.STONE)).count();
+        player.connection.handleSetCreativeModeSlot(new net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket(-1, new ItemStack(Items.STONE, 3)));
+        helper.assertTrue(creativeOp(player, window, view, 3, Action.CREATIVE_END, 0, 1, 2, "") == Result.OK, "drop end");
+        var reply = cursorUpdate(sent);
+        helper.assertTrue(stock(player, 0) == 3 && reply.count() == 3 && reply.remaining() == 3
+                && reply.takeSequence() == 1 && reply.operationSequence() == 3, "rejection lost stock or restored wrong identity");
+        long after = java.util.stream.StreamSupport.stream(helper.getLevel().getAllEntities().spliterator(), false)
+                .filter(e -> e instanceof net.minecraft.world.entity.item.ItemEntity item && item.getItem().is(Items.STONE)).count();
+        helper.assertTrue(before == after, "rejected drop produced a stone entity");
+        var wire = new RegistryFriendlyByteBuf(Unpooled.buffer(), player.registryAccess());
+        try {
+            PanelPackets.CursorUpdate.CODEC.encode(wire, reply);
+            helper.assertTrue(PanelPackets.CursorUpdate.CODEC.decode(wire).equals(reply), "cursor correlation codec changed identity");
+        } finally { wire.release(); }
+        CacheActions.close(player); helper.succeed();
+    }
+
+    @GameTest(template = "empty")
+    public static void previewCleanupSurvivesOrdinaryRateLimit(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 3); var player = f.player();
+        TestPlayers.nativePackets(player); player.setGameMode(net.minecraft.world.level.GameType.CREATIVE);
+        UUID window = UUID.randomUUID();
+        var view = PanelNetwork.query(player, new PanelPackets.Query(window, 0, true));
+        var take = new CacheActions.Intent(view.session(), view.revision(), Action.TAKE_CURSOR, 0, 3, -1, "");
+        PanelNetwork.command(player, new PanelPackets.Command(window, 1, take, true, "", 0));
+        for (int sequence = 2; sequence < 22; sequence++) {
+            var bad = new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 0, -1, "");
+            PanelNetwork.command(player, new PanelPackets.Command(window, sequence, bad, false, "", 0));
+        }
+        helper.assertTrue(dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 3, "invalid target canceled hold");
+        var release = new CacheActions.Intent(view.session(), view.revision(), Action.RELEASE_PREVIEW, -1, 1, -1, "");
+        PanelNetwork.command(player, new PanelPackets.Command(window, 22, release, false, "", 0));
+        helper.assertTrue(stock(player, 0) == 3 && dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(f.handle().cacheId(), 0) == 0, "budget dropped cleanup");
+        var deposit = new CacheActions.Intent(view.session(), view.revision(), Action.DEPOSIT, 0, 0, -1, "");
+        var limited = PanelNetwork.command(player, new PanelPackets.Command(window, 23, deposit, true, f.key().encoded(), 1));
+        var closed = PanelNetwork.command(player, new PanelPackets.Command(UUID.randomUUID(), 24, deposit, true, f.key().encoded(), 1));
+        helper.assertTrue(limited != null && limited.result() == Result.TOO_COMPLEX && closed != null && closed.result() == Result.STALE
+                && stock(player, 0) == 3, "real input got no explicit refusal or was consumed");
+        helper.succeed();
+    }
+
+    private static PanelPackets.CursorUpdate cursorUpdate(java.util.List<net.minecraft.network.protocol.Packet<?>> sent) {
+        return sent.stream().filter(p -> p instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket)
+                .map(p -> ((net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket)p).payload())
+                .filter(p -> p instanceof PanelPackets.CursorUpdate).map(p -> (PanelPackets.CursorUpdate)p).toList().getLast();
+    }
+
+    private static Result creativeOp(net.minecraft.server.level.ServerPlayer player, UUID window, PanelPackets.Snapshot view,
+            int sequence, Action action, int count, int take, int detail, String template) {
+        var intent = new CacheActions.Intent(view.session(), view.revision(), action, count, take, detail, count == 0 ? "" : template);
+        return PanelNetwork.command(player, new PanelPackets.Command(window, sequence, intent, false, "", 0)).result();
     }
 
     @GameTest(template = "empty")

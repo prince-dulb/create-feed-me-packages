@@ -46,6 +46,22 @@ public final class PanelPackets {
         @Override public Type<Command> type() { return TYPE; }
     }
     public record CellView(String template, int amount, int minimum, int maximum, int pending, int reserved, int stackSize, boolean residual) {}
+    /** FMP-owned cursor update, never a full vanilla inventory replacement. */
+    public record CursorUpdate(UUID window, UUID session, int takeSequence, int operationSequence,
+                               long updateSequence, String template, int count, int remaining) implements CustomPacketPayload {
+        public static final Type<CursorUpdate> TYPE = PanelPackets.type("cursor_update");
+        public static final StreamCodec<RegistryFriendlyByteBuf, CursorUpdate> CODEC = StreamCodec.of((b, s) -> {
+            b.writeUUID(s.window); b.writeUUID(s.session); b.writeVarInt(s.takeSequence);
+            b.writeVarInt(s.operationSequence); b.writeLong(s.updateSequence);
+            text(b, s.template, 1024); b.writeVarInt(s.count); b.writeVarInt(s.remaining);
+        }, b -> {
+            bound(b, C2S_LIMIT);
+            var result = new CursorUpdate(b.readUUID(), b.readUUID(), b.readVarInt(), b.readVarInt(),
+                    b.readLong(), text(b, 1024), b.readVarInt(), b.readVarInt());
+            end(b); return result;
+        });
+        @Override public Type<CursorUpdate> type() { return TYPE; }
+    }
     public record TerminalView(int slot, boolean personal, boolean disabled, String network) {}
     public record Snapshot(UUID window, UUID session, long serial, int acknowledged, CacheActions.Result result,
                            AccessGate.Status status, long revision, int level, int capacity, boolean personal,

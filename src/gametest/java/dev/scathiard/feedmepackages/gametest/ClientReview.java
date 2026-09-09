@@ -185,6 +185,10 @@ public final class ClientReview {
                         if (!reviewSameTick()) return;
                         sameTickDone = true;
                     }
+                    if (!provenanceDone) {
+                        if (!reviewCreativeProvenance()) return;
+                        provenanceDone = true;
+                    }
                     advance();
                 }
                 case 15 -> {
@@ -692,6 +696,130 @@ public final class ClientReview {
         gap1Stage++; gap1Changed = ticks; return false;
     }
 
+    private static boolean provenanceDone, holdNextGrant, holdNextUpdate;
+    private static int provenanceStage, provenanceChanged;
+    private static PanelPackets.CursorUpdate delayedGrant;
+    private static Consumer<PanelPackets.CursorUpdate> realCursorReceiver;
+
+    private static boolean reviewCreativeProvenance() {
+        var mc = Minecraft.getInstance();
+        if (provenanceStage != 0 && ticks - provenanceChanged < 20) return false;
+        switch (provenanceStage) {
+            case 0 -> {
+                if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false;
+                try {
+                    var field = dev.scathiard.feedmepackages.network.PanelNetwork.class.getDeclaredField("cursorReceiver");
+                    field.setAccessible(true);
+                    realCursorReceiver = (Consumer<PanelPackets.CursorUpdate>) field.get(null);
+                    dev.scathiard.feedmepackages.network.PanelNetwork.receiveCursorOnClient(packet -> {
+                        if (holdNextUpdate || holdNextGrant && packet.remaining() > 0) { delayedGrant = packet; holdNextGrant = false; holdNextUpdate = false; }
+                        else realCursorReceiver.accept(packet);
+                    });
+                } catch (ReflectiveOperationException failure) { throw new IllegalStateException(failure); }
+                server(player -> {
+                    player.getInventory().setItem(0, ItemStack.EMPTY);
+                    player.getInventory().setItem(1, ItemStack.EMPTY);
+                    player.inventoryMenu.broadcastFullState();
+                    require(stock(player) == 3, "provenance seed");
+                });
+            }
+            case 1 -> clickCellBody(0);
+            case 2 -> {
+                require(mc.player.containerMenu.getCarried().getCount() == 3, "provenance take3");
+                clickCreativeSlot(Items.STONE);
+            }
+            case 3 -> {
+                require(mc.player.containerMenu.getCarried().getCount() == 4, "same-item list increment must keep4");
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 3,
+                        "list increment canceled the three preview items"));
+                var screen = (CreativeModeInventoryScreen)mc.screen;
+                var slot = screen.getMenu().slots.stream().filter(x -> x.container == mc.player.getInventory() && x.getContainerSlot() == 0).findFirst().orElseThrow();
+                nativeMouse(screen.getGuiLeft()+slot.x+8, screen.getGuiTop()+slot.y+8, 1, 1);
+                nativeMouse(screen.getGuiLeft()+slot.x+8, screen.getGuiTop()+slot.y+8, 1, 0);
+            }
+            case 4 -> {
+                require(mc.player.containerMenu.getCarried().getCount() == 3, "right placement must leave preview3");
+                server(player -> require(stock(player) == 3 && player.getInventory().getItem(0).getCount() == 1, "real-first placement charged cache"));
+                mc.player.closeContainer();
+            }
+            case 5 -> {
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "mixed close changed stock"));
+                require(mc.player.containerMenu.getCarried().isEmpty(), "mixed close left preview");
+                mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
+            }
+            case 6 -> { if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false; clickCellBody(0); }
+            case 7 -> { require(mc.player.containerMenu.getCarried().getCount() == 3, "second take3"); clickCreativeSlot(Items.STONE); }
+            case 8 -> { require(mc.player.containerMenu.getCarried().getCount() == 4, "second list increment"); placeIntoBackpack(1); }
+            case 9 -> {
+                server(player -> {
+                    require(stock(player) == 0 && player.getInventory().getItem(1).getCount() == 4, "whole mixed placement must charge3 and place4");
+                    var access = AccessGate.resolve(player); var ledger = CacheLedger.get(player.getServer());
+                    var record = ledger.find(access.handle().cacheId()); var edit = record.state().edit();
+                    edit.insert(0, record.state().cells().getFirst().filter(), 3);
+                    ledger.replace(access.handle(), record.state().revision(), record.withState(edit.finish()));
+                });
+                FeedMePackages.LOGGER.info("FMP_CREATIVE_MIXED_SOURCE_PASSED right-real-first close whole-place4");
+            }
+            case 10 -> { holdNextGrant = true; clickCellBody(0); }
+            case 11 -> {
+                if (delayedGrant == null) return false;
+                require(mc.player.containerMenu.getCarried().isEmpty(), "withheld grant wrote the cursor anyway");
+                mc.player.closeContainer();
+            }
+            case 12 -> mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
+            case 13 -> { if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false; clickCreativeSlot(Items.STONE); }
+            case 14 -> {
+                var independent = mc.player.containerMenu.getCarried().copy();
+                require(independent.is(Items.STONE) && independent.getCount() == 1, "new window independent cursor");
+                // This is the real decoded S2C grant captured before application, not a made-up snapshot.
+                realCursorReceiver.accept(delayedGrant);
+                require(ItemStack.matches(mc.player.containerMenu.getCarried(), independent), "old grant overwrote new window cursor");
+                server(player -> require(stock(player) == 3 && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 0) == 0, "late grant revived reservation"));
+            }
+            case 15 -> {
+                FeedMePackages.LOGGER.info("FMP_CREATIVE_DELAYED_GRANT_PASSED actual-S2C withheld close new-window independent1");
+                delayedGrant = null; holdNextUpdate = true;
+                clickCellBody(0); // deposit the independent1, withhold its real completion reply
+            }
+            case 16 -> {
+                if (delayedGrant == null) return false;
+                server(player -> require(stock(player) == 4, "delayed deposit did not commit once"));
+                mc.player.closeContainer();
+            }
+            case 17 -> {
+                realCursorReceiver.accept(delayedGrant);
+                require(mc.player.containerMenu.getCarried().isEmpty(), "closed pending deposit left a duplicate real item");
+                server(player -> require(stock(player) == 4, "closed pending deposit changed cache twice"));
+                mc.setScreen(new CreativeModeInventoryScreen(mc.player, mc.player.connection.enabledFeatures(), mc.options.operatorItemsTab().get()));
+            }
+            case 18 -> {
+                FeedMePackages.LOGGER.info("FMP_CREATIVE_DELAYED_DEPOSIT_PASSED actual-S2C withheld commit close reconcile");
+                server(player -> {
+                    var foreign = new ItemStack(Items.DIRT);
+                    foreign.set(DataComponents.CUSTOM_NAME, Component.literal("large-native-" + "x".repeat(1800)));
+                    player.getInventory().setItem(2, foreign); player.inventoryMenu.broadcastFullState();
+                });
+            }
+            case 19 -> { if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false; clickCellBody(0); }
+            case 20 -> { require(mc.player.containerMenu.getCarried().getCount() == 4, "foreign swap take4"); placeIntoBackpack(2); }
+            case 21 -> {
+                var foreign = mc.player.containerMenu.getCarried();
+                require(foreign.is(Items.DIRT) && foreign.getCount() == 1
+                        && foreign.getHoverName().getString().equals("large-native-" + "x".repeat(1800)), "foreign native components changed or failed cache codec");
+                server(player -> require(stock(player) == 0 && player.getInventory().getItem(2).is(Items.STONE)
+                        && player.getInventory().getItem(2).getCount() == 4, "foreign native swap settlement"));
+            }
+            case 22 -> {
+                dev.scathiard.feedmepackages.network.PanelNetwork.receiveCursorOnClient(realCursorReceiver);
+                FeedMePackages.LOGGER.info("FMP_CREATIVE_FOREIGN_CURSOR_PASSED native-swap oversized-components preserved");
+                mc.player.containerMenu.setCarried(ItemStack.EMPTY); // verified scenario handoff only
+                return true;
+            }
+            default -> throw new IllegalStateException("Unexpected provenance stage");
+        }
+        provenanceStage++; provenanceChanged=ticks; return false;
+    }
+
     private static void creativeHotbarClick() {
         var mc = Minecraft.getInstance(); var screen = (CreativeModeInventoryScreen)mc.screen;
         var slot = screen.getMenu().slots.stream().filter(s -> s.container == mc.player.getInventory() && s.getContainerSlot() == 0).findFirst().orElseThrow();
@@ -786,7 +914,9 @@ public final class ClientReview {
             case 8 -> {
                 if (ticks - layoutChanged < 20) break;
                 require(ItemStack.matches(mc.player.containerMenu.getCarried(), layoutItem(35).copyWithCount(7)), "Last-cell withdrawal lost amount or components");
-                server(player -> require(layoutStock(player) == 0, "Last-cell withdrawal did not deduct exactly seven"));
+                server(player -> require(layoutStock(player) == 7
+                        && CursorReservations.reserved(AccessGate.resolve(player).handle().cacheId(), 35) == 7,
+                        "Last-cell take must reserve seven without committing stock"));
                 click(lastCell.x() + 8, lastCell.y() + 8); nextLayout();
             }
             case 9 -> {
@@ -814,7 +944,7 @@ public final class ClientReview {
             case 12 -> {
                 if (ticks - layoutChanged < 15) break;
                 if (mc.screen instanceof InventoryScreen inventory) require(!inventory.getRecipeBookComponent().isVisible(), "Compact expand did not close obstructing book");
-                checkPanelBounds(); require(LogisticsPanel.exclusions(mc.screen).getFirst().width() == PanelLayout.WIDTH, "Panel cannot expand after book closure");
+                checkPanelBounds(); require(!panelLayout().compact() && !LogisticsPanel.visibleCells(mc.screen).isEmpty(), "Panel cannot expand after book closure");
                 FeedMePackages.LOGGER.info("FMP_CLIENT_LAYOUT_PASSED mode={} scale={} framebuffer={}x{} cells=36 real-deposit-withdrawal", layoutIndex < 4 ? "survival" : "creative", scale, mc.getWindow().getWidth(), mc.getWindow().getHeight());
                 layoutIndex++; layoutStage = 0; layoutChanged = ticks;
             }

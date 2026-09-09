@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.WeakHashMap;
-import net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket;
+import dev.scathiard.feedmepackages.network.PanelNetwork;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
@@ -31,6 +31,16 @@ import net.minecraft.world.entity.item.ItemEntity;
  */
 public final class CursorReservations {
     private static final Map<ServerPlayer, Hold> HOLDS = new WeakHashMap<>();
+    private static final Map<ServerPlayer, CreativeOperation> CREATIVE = new WeakHashMap<>();
+    // 0 transfers the cursor, 1 changes/discards a list cursor locally, 2 operates an independent slot.
+    private static final class CreativeOperation {
+        final Hold hold; final int sequence, mode; final ItemStack before;
+        int realLeft, accepted;
+        CreativeOperation(Hold hold, int sequence, int mode, ItemStack before) {
+            this.hold=hold; this.sequence=sequence; this.mode=mode; this.before=before.copy();
+            realLeft=Math.max(0, before.getCount()-hold.amount);
+        }
+    }
     private static long epoch;
     public static long epoch() { return epoch; }
     private static final class Hold {
@@ -101,9 +111,7 @@ public final class CursorReservations {
         AbstractContainerMenu menu = hold.menu.get();
         if (menu == null) return;
         if (hold.creative) {
-            // Creative cursor ownership is client-side in vanilla, as in test.48.
-            player.connection.send(new ClientboundContainerSetContentPacket(menu.containerId,
-                    menu.incrementStateId(), menu.getItems(), stack));
+            PanelNetwork.sendCursor(player, hold.panelSession, hold.requestSeq, stack, hold.amount);
         } else menu.setCarried(stack);
     }
 
@@ -131,6 +139,7 @@ public final class CursorReservations {
 
     /** Do not alter cache stock on cancellation, including menu close, logout and death. */
     public static void cancel(ServerPlayer player) {
+        CREATIVE.remove(player);
         Hold hold = HOLDS.get(player);
         if (hold == null) return;
         if (hold.clicking) settleClick(player, hold);
@@ -159,6 +168,67 @@ public final class CursorReservations {
             return CacheActions.Result.STALE;
         cancel(player);
         return CacheActions.Result.OK;
+    }
+
+    public static CacheActions.Result beginCreative(ServerPlayer player, UUID session, int take, int sequence, int mode, ItemStack before) {
+        Hold hold = HOLDS.get(player);
+        if (mode < 0 || mode > 2 || take <= 0 || sequence <= 0) return CacheActions.Result.INVALID_REQUEST;
+        if (hold == null || !hold.creative || hold.menu.get() != player.containerMenu
+                || !Objects.equals(session, hold.panelSession) || hold.requestSeq != take
+                || !same(before, hold) || before.getCount() < hold.amount || CREATIVE.containsKey(player))
+            return CacheActions.Result.STALE;
+        CREATIVE.put(player, new CreativeOperation(hold, sequence, mode, before));
+        return CacheActions.Result.OK;
+    }
+
+    public static CacheActions.Result endCreative(ServerPlayer player, UUID session, int take, int beginSequence, ItemStack after) {
+        CreativeOperation operation = CREATIVE.get(player);
+        if (operation == null || operation.sequence != beginSequence || operation.hold.requestSeq != take
+                || !Objects.equals(session, operation.hold.panelSession)) return CacheActions.Result.STALE;
+        CREATIVE.remove(player);
+        Hold hold = operation.hold;
+        if (hold.menu.get() != player.containerMenu) return CacheActions.Result.STALE;
+        if (after == null) {
+            if (operation.mode != 0) { hold.amount=0; HOLDS.remove(player, hold); ++epoch; }
+            if (operation.mode == 0 && hold.amount > 0)
+                PanelNetwork.sendCursor(player, session, take,
+                        hold.prototype.copyWithCount(operation.before.getCount()-operation.accepted), hold.amount);
+            else PanelNetwork.sendCursor(player, session, take, null, 0);
+            return CacheActions.Result.OK;
+        }
+        ItemStack corrected = after.copy();
+        if (operation.mode == 1) {
+            // Creative list edits destroy only the alias, never charge the cache. Added list items
+            // are real; shrinking a mixed cursor removes the real part first.
+            int remaining = same(after, hold) ? Math.min(hold.amount, after.getCount()) : 0;
+            if (remaining != hold.amount) { hold.amount=remaining; ++epoch; }
+            if (remaining == 0) HOLDS.remove(player, hold);
+        } else if (operation.mode == 0) {
+            int locallyRemoved = same(after, hold) ? Math.max(0, operation.before.getCount()-after.getCount())
+                    : operation.before.getCount();
+            int missing = Math.max(0, locallyRemoved-operation.accepted);
+            // Native rejection left uncommitted material. Restore only that portion and only to a
+            // compatible cursor; its tagged reply cannot overwrite a later operation or closed UI.
+            if (missing > 0) {
+                int count = (same(corrected, hold) ? corrected.getCount() : 0) + missing;
+                if (count > hold.prototype.getMaxStackSize()) return CacheActions.Result.STALE;
+                corrected = hold.prototype.copyWithCount(count);
+            }
+        }
+        PanelNetwork.sendCursor(player, session, take, corrected, hold.amount);
+        return CacheActions.Result.OK;
+    }
+
+    private static void creativeDebit(ServerPlayer player, Hold hold, int transferred) {
+        CreativeOperation operation = CREATIVE.get(player);
+        if (operation != null && operation.hold == hold) {
+            if (operation.mode != 0) return;
+            operation.accepted += transferred;
+            int real = Math.min(operation.realLeft, transferred);
+            operation.realLeft -= real;
+            transferred -= real;
+        }
+        debit(player, hold, transferred);
     }
 
     public static void validate(ServerPlayer player) {
@@ -233,6 +303,7 @@ public final class CursorReservations {
     public static int creativeBefore(ServerPlayer player, int slot) {
         Hold hold=HOLDS.get(player);
         if (hold == null || !hold.creative || slot < 1 || slot >= player.inventoryMenu.slots.size()) return -1;
+        if (hold.requestSeq > 0 && !CREATIVE.containsKey(player)) return -1;
         ItemStack before=player.inventoryMenu.getSlot(slot).getItem();
         return same(before,hold) ? before.getCount() : 0;
     }
@@ -241,16 +312,18 @@ public final class CursorReservations {
         if (hold == null || !hold.creative || before < 0 || slot >= player.inventoryMenu.slots.size()) return;
         ItemStack after=player.inventoryMenu.getSlot(slot).getItem();
         int added=same(after,hold) ? Math.max(0,after.getCount()-before) : 0;
-        debit(player,hold,added);
+        creativeDebit(player,hold,added);
     }
     public static void creativeDropped(ServerPlayer player, ItemStack offered, ItemEntity entity) {
         Hold hold=HOLDS.get(player);
         if (hold == null || !hold.creative || !same(offered,hold)) return;
-        if (entity != null) debit(player,hold,offered.getCount());
+        if (hold.requestSeq > 0 && !CREATIVE.containsKey(player)) return;
+        if (entity != null) creativeDebit(player,hold,offered.getCount());
         else restoreCreativeCursor(player);
     }
     public static void restoreCreativeCursor(ServerPlayer player) {
+        if (CREATIVE.containsKey(player)) return; // Reconcile once at the matching native operation end.
         Hold hold=HOLDS.get(player);
-        if (hold != null && hold.creative) cursor(player,hold,hold.prototype.copyWithCount(hold.amount));
+        if (hold != null && hold.creative && hold.requestSeq <= 0) cursor(player,hold,hold.prototype.copyWithCount(hold.amount));
     }
 }

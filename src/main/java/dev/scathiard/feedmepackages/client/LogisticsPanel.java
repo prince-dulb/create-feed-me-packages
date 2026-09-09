@@ -79,6 +79,24 @@ public final class LogisticsPanel {
     private static String previewVariant;
     private static int previewRemaining;
     private static int previewSeq;
+    private static int cursorOperation;
+    private static long cursorSerial;
+    private static UUID cursorSession;
+    private static ItemStack cursorExpected = ItemStack.EMPTY;
+    private static boolean cursorPending;
+    private static final Map<Integer, CacheActions.Intent> pendingReleases = new HashMap<>();
+    private static PendingCursorChange pendingCursorChange;
+    private static final class PendingCursorChange {
+        final UUID window, session; final int sequence;
+        boolean closed; ItemStack expected;
+        PendingCursorChange(UUID window, UUID session, int sequence, ItemStack before) {
+            this.window=window; this.session=session; this.sequence=sequence; this.expected=before.copy();
+        }
+        boolean matches(UUID window, UUID session, int sequence) {
+            return this.window.equals(window) && this.session.equals(session) && this.sequence == sequence;
+        }
+    }
+    public record CreativeClick(int sequence, int mode, int take, int remaining, ItemStack before) {}
     /** Whether the TAKE_CURSOR was confirmed by the server (vs. still awaiting) so an empty carry is
      *  never mistaken for a replaced preview during the request/confirm gap. */
     private static boolean previewConfirmed;
@@ -108,6 +126,7 @@ public final class LogisticsPanel {
 
     public static void register() {
         PanelNetwork.receiveOnClient(LogisticsPanel::receive);
+        PanelNetwork.receiveCursorOnClient(LogisticsPanel::receiveCursor);
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener((ScreenEvent.Opening event) -> {
             boolean bl = retainTransition = window != null && (event.getNewScreen() == screen || recipeOverlay.test(event.getNewScreen()));
@@ -189,33 +208,101 @@ public final class LogisticsPanel {
                 LogisticsPanel.close();
             }
         });
-        // Operation boundary: if the player clicks a creative LIST slot while this client still holds an
-        // FMP preview, release that preview to the server BEFORE the native pick-up replaces the carry.
-        // Otherwise the server's restoreCreativeCursor re-applies the old preview after the clear, wiping
-        // the fresh independent stone (the n=3 trace). This fires on the pick-up edge, not on a later tick.
-        bus.addListener((ScreenEvent.MouseButtonPressed.Pre event) -> {
-            if (screen instanceof CreativeModeInventoryScreen && previewRemaining > 0 && previewVariant != null
-                    && onCreativeListSlot(event.getMouseX(), event.getMouseY())) {
-                askServerReleasePreview();
-                // Same-tick replacement: the pick-up replaces the carry, so the local preview ownership is
-                // invalidated here (not only on a later tick) or a close in the same tick would still debit it.
-                previewRemaining = 0; previewConfirmed = false; previewVariant = null;
-            }
-        });
     }
 
-    private static boolean onCreativeListSlot(double x, double y) {
-        if (!(screen instanceof CreativeModeInventoryScreen creative)) return false;
+    /** Invoked around the actual native method, never from a speculative mouse press. */
+    public static CreativeClick beforeCreativeClick(Screen owner, boolean list, boolean destroy,
+            net.minecraft.world.inventory.Slot slot, int button, net.minecraft.world.inventory.ClickType type) {
+        if (pendingCursorChange != null) return new CreativeClick(-1, 0, 0, 0, ItemStack.EMPTY);
+        if (!current(owner) || !(owner instanceof CreativeModeInventoryScreen) || MC.player == null) return null;
+        if (cursorPending) return new CreativeClick(-1, 0, 0, 0, ItemStack.EMPTY);
+        if (!previewConfirmed || previewRemaining <= 0 || snapshot == null) return null;
+        ItemStack before = MC.player.containerMenu.getCarried().copy();
         try {
-            var field = CreativeModeInventoryScreen.class.getDeclaredField("CONTAINER"); field.setAccessible(true);
-            var listContainer = (net.minecraft.world.Container) field.get(null);
-            for (var slot : creative.getMenu().slots) {
-                if (slot.container == listContainer
-                        && x >= creative.getGuiLeft() + slot.x && x < creative.getGuiLeft() + slot.x + 16
-                        && y >= creative.getGuiTop() + slot.y && y < creative.getGuiTop() + slot.y + 16) return true;
+            if (before.isEmpty() || !ItemStack.isSameItemSameComponents(before,
+                    ItemVariantKey.decode(previewVariant, MC.player.registryAccess()).stack(MC.player.registryAccess(), 1))) {
+                askServerReleasePreview(); previewRemaining=0; previewVariant=null; previewConfirmed=false;
+                return null;
             }
-        } catch (ReflectiveOperationException ignored) { }
-        return false;
+        } catch (IllegalArgumentException invalid) { return null; }
+        boolean pickup = type == net.minecraft.world.inventory.ClickType.PICKUP
+                || type == net.minecraft.world.inventory.ClickType.QUICK_MOVE;
+        int mode = destroy || list && pickup ? 1 : list
+                || type == net.minecraft.world.inventory.ClickType.SWAP
+                || type == net.minecraft.world.inventory.ClickType.CLONE
+                || type == net.minecraft.world.inventory.ClickType.QUICK_MOVE
+                || type == net.minecraft.world.inventory.ClickType.THROW && slot != null ? 2 : 0;
+        int seq = sendCreativeOperation(CacheActions.Action.CREATIVE_BEGIN, previewSeq, mode, before);
+        return new CreativeClick(seq, mode, previewSeq, previewRemaining, before);
+    }
+
+    public static void afterCreativeClick(CreativeClick click) {
+        if (click == null || click.sequence() <= 0 || MC.player == null) return;
+        ItemStack after = MC.player.containerMenu.getCarried().copy();
+        boolean same = !after.isEmpty() && ItemStack.isSameItemSameComponents(after, click.before());
+        previewRemaining = same ? Math.min(click.remaining(), after.getCount()) : 0;
+        int end = sendCreativeOperation(CacheActions.Action.CREATIVE_END, click.take(), click.sequence(), same || after.isEmpty() ? after : null);
+        cursorOperation = end;
+        cursorExpected = after.copy();
+        if (click.mode() == 0 && (same || after.isEmpty()) && click.before().getCount() > click.remaining())
+            pendingCursorChange = new PendingCursorChange(window, cursorSession, end, after);
+        // List replacement is final locally: the next same-tick independent pickup must remain free.
+        // Transfer results are serialized until authoritative acceptance/rejection arrives.
+        cursorPending = click.mode() == 0 && (!same || after.getCount() < click.before().getCount());
+        if (click.mode() == 1 && previewRemaining == 0) {
+            askServerReleasePreview();
+            previewVariant = null; previewConfirmed = false; cursorOperation = 0;
+        }
+    }
+
+    private static int sendCreativeOperation(CacheActions.Action action, int take, int detail, ItemStack cursor) {
+        int seq = ++sequence;
+        String template = cursor == null || cursor.isEmpty() ? "" : ItemVariantKey.of(cursor, MC.player.registryAccess()).encoded();
+        var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), action, cursor == null ? -1 : cursor.getCount(), take, detail, template);
+        PacketDistributor.sendToServer(new PanelPackets.Command(window, seq, intent, false, "", 0));
+        return seq;
+    }
+
+    private static void receiveCursor(PanelPackets.CursorUpdate packet) {
+        // A submitted real transfer still owns its input until acknowledgement. Closing cancels only
+        // its preview portion. Settle its real remainder before allowing the next native cursor use.
+        if (pendingCursorChange != null && pendingCursorChange.closed && MC.player != null
+                && pendingCursorChange.matches(packet.window(), packet.session(), packet.operationSequence())) {
+            try {
+                ItemStack remaining = packet.count() == 0 && packet.template().isEmpty() ? ItemStack.EMPTY
+                        : ItemVariantKey.decode(packet.template(), MC.player.registryAccess()).stack(MC.player.registryAccess(), packet.count());
+                if (packet.remaining() < 0 || packet.remaining() > remaining.getCount()
+                        || !ItemStack.matches(pendingCursorChange.expected, MC.player.containerMenu.getCarried())) return;
+                remaining.shrink(packet.remaining());
+                MC.player.containerMenu.setCarried(remaining);
+                pendingCursorChange = null;
+            } catch (IllegalArgumentException invalid) { notice("result.invalid_item"); }
+            return;
+        }
+        if (window == null || MC.player == null || !(screen instanceof CreativeModeInventoryScreen)
+                || MC.screen != screen || !window.equals(packet.window())
+                || !Objects.equals(cursorSession, packet.session()) || packet.operationSequence() != cursorOperation
+                || packet.updateSequence() <= cursorSerial || packet.takeSequence() != previewSeq
+                || !ItemStack.matches(cursorExpected, MC.player.containerMenu.getCarried())) return;
+        if (packet.count() == -1 && packet.remaining() == 0 && packet.template().isEmpty()) {
+            cursorSerial = packet.updateSequence(); cursorPending = false;
+            previewRemaining = 0; previewConfirmed = false; previewVariant = null;
+            return; // Acknowledge transfer; leave the unrelated native cursor completely untouched.
+        }
+        try {
+            ItemStack stack = packet.count() == 0 && packet.template().isEmpty() ? ItemStack.EMPTY
+                    : ItemVariantKey.decode(packet.template(), MC.player.registryAccess()).stack(MC.player.registryAccess(), packet.count());
+            if (packet.count() < 0 || packet.count() > stack.getMaxStackSize()
+                    || packet.remaining() < 0 || packet.remaining() > packet.count()) return;
+            cursorSerial = packet.updateSequence();
+            MC.player.containerMenu.setCarried(stack);
+            cursorExpected = stack.copy();
+            previewRemaining = packet.remaining();
+            previewVariant = previewRemaining > 0 ? packet.template() : null;
+            previewConfirmed = previewRemaining > 0;
+            cursorPending = false;
+            if (pendingCursorChange != null && pendingCursorChange.matches(packet.window(), packet.session(), packet.operationSequence())) pendingCursorChange = null;
+        } catch (IllegalArgumentException invalid) { notice("result.invalid_item"); }
     }
 
     private static boolean supported(Screen candidate) {
@@ -243,7 +330,8 @@ public final class LogisticsPanel {
     private static void tick() {
         boolean overlay;
         ++tick;
-        LogisticsPanel.updatePreviewOwnership();
+        if (MC.player == null || MC.getConnection() == null) pendingCursorChange = null;
+
         boolean bl = overlay = recipeOverlay.test(LogisticsPanel.MC.screen) && window != null;
         if (LogisticsPanel.MC.player == null || MC.getConnection() == null || !LogisticsPanel.supported(LogisticsPanel.MC.screen) && !overlay) {
             if (window != null) {
@@ -265,36 +353,15 @@ public final class LogisticsPanel {
         }
     }
 
-    private static void updatePreviewOwnership() {
-        // Only a CONFIRMED preview owns the carry. While pending, an empty carry is the normal
-        // request/confirm gap and must not invalidate ownership. Once confirmed, an emptied carry
-        // (e.g. a creative-list pickup that clears the cursor) or a different-variant carry replaces
-        // the preview, so this client's ownership is dropped and a later same/similar carry is fresh.
-        if (previewVariant == null || LogisticsPanel.MC.player == null || !previewConfirmed) return;
-        var carried = LogisticsPanel.MC.player.containerMenu.getCarried();
-        if (carried.isEmpty()) {
-            askServerReleasePreview();
-            previewRemaining = 0; previewVariant = null; previewConfirmed = false; return;
-        }
-        try {
-            var variant = ItemVariantKey.decode(previewVariant, (HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess());
-            if (!ItemStack.isSameItemSameComponents(carried, variant.stack((HolderLookup.Provider)LogisticsPanel.MC.player.registryAccess(), 1))) {
-                askServerReleasePreview();
-                previewRemaining = 0; previewVariant = null; previewConfirmed = false;
-            }
-        } catch (IllegalArgumentException invalid) { previewRemaining = 0; previewVariant = null; previewConfirmed = false; }
-    }
-
     /** Our preview was replaced/emptied on the creative list, so release our own panel-session hold on
      *  the server; otherwise creativeAfter would debit a later independent same-variant placement. */
     private static void askServerReleasePreview() {
         if (snapshot == null || window == null || LogisticsPanel.MC.player == null) return;
         try {
             var intent = new CacheActions.Intent(snapshot.session(), snapshot.revision(), CacheActions.Action.RELEASE_PREVIEW, -1, previewSeq, -1, "");
-            // Use an incrementing window sequence so PanelNetwork.command accepts it (0 <= lastSequence would
-            // be rejected as STALE). The confirm is not awaited (we do not touch waiting/predict), so it can
-            // never cover another in-flight intent's confirmation.
+            // Cleanup acknowledgements are tracked separately from ordinary UI predictions.
             int seq = ++sequence;
+            pendingReleases.put(seq, intent);
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, seq, intent, false, "", 0), (CustomPacketPayload[])new CustomPacketPayload[0]);
         } catch (IllegalArgumentException invalid) { /* stale template; nothing to release */ }
     }
@@ -335,7 +402,13 @@ public final class LogisticsPanel {
                 catch (IllegalArgumentException invalid) { /* not our variant; leave the carry untouched */ }
             }
         }
+        if (pendingCursorChange != null && !pendingCursorChange.closed && MC.player != null) {
+            pendingCursorChange.closed = true;
+            pendingCursorChange.expected = MC.player.containerMenu.getCarried().copy();
+        }
         previewRemaining = 0; previewVariant = null; previewConfirmed = false;
+        previewSeq = 0; cursorOperation = 0; cursorSerial = 0; cursorSession = null; cursorPending = false;
+        cursorExpected = ItemStack.EMPTY; pendingReleases.clear();
         if (window != null && MC.getConnection() != null && LogisticsPanel.MC.player != null) {
             PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Query(window, LogisticsPanel.MC.player.containerMenu.containerId, false), (CustomPacketPayload[])new CustomPacketPayload[0]);
         }
@@ -360,24 +433,26 @@ public final class LogisticsPanel {
     }
 
     private static void receive(PanelPackets.Snapshot incoming) {
-        // A matching acknowledgement must clear the display prediction even if the carried snapshot
-        // is stale (older serial) — otherwise a late ack leaves a ghosted number. Clearing the
-        // prediction is display-only and never cancels or re-sends a server transaction.
-        if (incoming != null && incoming.acknowledged() != 0 && incoming.acknowledged() == waiting
-                && predict != null && predict.sequence() == incoming.acknowledged()
-                && (predict.window().equals(incoming.window()) || predict.window() == null)) {
-            predict = null;
+        if (incoming != null && pendingCursorChange != null
+                && pendingCursorChange.window.equals(incoming.window()) && pendingCursorChange.sequence == incoming.acknowledged()
+                && incoming.result() != CacheActions.Result.OK) pendingCursorChange = null;
+        if (incoming == null || window == null || MC.screen != screen && !recipeOverlay.test(MC.screen)
+                || !window.equals(incoming.window())) return;
+        // A later processed sequence also proves earlier bounded cleanup commands were handled.
+        pendingReleases.keySet().removeIf(seq -> seq <= incoming.acknowledged());
+        if (incoming.acknowledged() != 0 && incoming.acknowledged() == waiting) {
             waiting = 0;
+            predict = null;
             if (incoming.result() != CacheActions.Result.OK) {
-                LogisticsPanel.notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
-                previewVariant = null; previewRemaining = 0; previewConfirmed = false;
-            } else if (previewVariant != null) {
-                previewConfirmed = true; // server confirmed the take; the carry is now our active preview
+                notice("result." + incoming.result().name().toLowerCase(Locale.ROOT));
+                // A failed DEPOSIT does not revoke an existing preview. A failed TAKE never grants one.
+                if (!previewConfirmed && incoming.acknowledged() == cursorOperation) {
+                    previewVariant = null; previewRemaining = 0;
+                }
+                cursorPending = false;
             }
         }
-        if (window == null || LogisticsPanel.MC.screen != screen && !recipeOverlay.test(LogisticsPanel.MC.screen) || !window.equals(incoming.window()) || incoming.serial() <= serial) {
-            return;
-        }
+        if (incoming.serial() <= serial) return;
         boolean wasVisible = snapshot != null && snapshot.status() != AccessGate.Status.NOT_WORN;
         serial = incoming.serial();
         snapshot = incoming;
@@ -1006,7 +1081,7 @@ public final class LogisticsPanel {
 
     private static boolean send(CacheActions.Action action, int slot, int first, int second, String template) {
         ItemStack held;
-        if (snapshot == null || snapshot.session() == null || waiting != 0 || window == null) {
+        if (snapshot == null || snapshot.session() == null || waiting != 0 || cursorPending || pendingCursorChange != null || window == null) {
             return false;
         }
         boolean creative = screen instanceof CreativeModeInventoryScreen && (action == CacheActions.Action.DEPOSIT || action == CacheActions.Action.TAKE_CURSOR);
@@ -1026,6 +1101,14 @@ public final class LogisticsPanel {
         waiting = ++sequence;
         waitingSince = tick;
         recordPredict(action, slot, first, template, waiting);
+        if (creative) {
+            cursorSession = snapshot.session(); cursorOperation = waiting;
+            cursorExpected = MC.player.containerMenu.getCarried().copy(); cursorPending = true;
+            if (action == CacheActions.Action.DEPOSIT) pendingCursorChange = new PendingCursorChange(window, cursorSession, waiting, cursorExpected);
+            if (action == CacheActions.Action.TAKE_CURSOR) {
+                previewSeq = waiting; previewRemaining = 0; previewVariant = null; previewConfirmed = false;
+            } else if (!previewConfirmed) previewSeq = 0;
+        }
         PacketDistributor.sendToServer((CustomPacketPayload)new PanelPackets.Command(window, waiting, intent, creative, cursor, count), (CustomPacketPayload[])new CustomPacketPayload[0]);
         return true;
     }
@@ -1054,7 +1137,7 @@ public final class LogisticsPanel {
         // Track this client's local preview ownership for the withdrawn-amount bound of this take.
         // It is pending (previewConfirmed=false) until the server acknowledges; a rejected/expired take
         // never becomes confirmed and thus never claims a later independent same-variant carry.
-        if (action == CacheActions.Action.TAKE_CURSOR) { previewVariant = cell.template(); previewRemaining = delta; previewConfirmed = false; previewSeq = sequence; }
+
     }
 
     private static Component tr(String key, Object ... args) {
