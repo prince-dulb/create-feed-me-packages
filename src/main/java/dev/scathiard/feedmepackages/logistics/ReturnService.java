@@ -13,7 +13,10 @@ import dev.scathiard.feedmepackages.storage.CacheHandle;
 import dev.scathiard.feedmepackages.storage.CacheLedger;
 import dev.scathiard.feedmepackages.storage.CacheRecord;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -28,7 +31,22 @@ public final class ReturnService {
     private static final int PACKAGE_SLOTS = 9;
     private record Carrier(int inventorySlot, int cacheSlot) {}
 
+    /** Per-cell return dispatch evidence, short-lived and never persisted. UNKNOWN means no evidence
+     *  (gray), FAILED means a check ran but no carrier was accepted (gray), SENT means a real carrier
+     *  accepted the package (red while the cell is still above its maximum). Keyed by cacheId so a
+     *  context change can never inherit another cache/player's success state. */
+    public static final int RETURN_UNKNOWN = 0, RETURN_FAILED = 1, RETURN_SENT = 2;
+    private static final Map<UUID, byte[]> DISPATCH_STATES = new HashMap<>();
+
     private ReturnService() {}
+
+    /** Latest per-cell dispatch evidence for the panel snapshot. Slot outside the recorded size or an
+     *  absent cache reads UNKNOWN (no evidence -> gray arrow, never a stale red). */
+    public static int dispatchState(UUID cacheId, int slot) {
+        byte[] states = DISPATCH_STATES.get(cacheId);
+        if (states == null || slot < 0 || slot >= states.length) return RETURN_UNKNOWN;
+        return states[slot];
+    }
 
     public static void tick(ServerPlayer player) {
         if (player.tickCount % 40 == 0) check(player);
@@ -36,55 +54,68 @@ public final class ReturnService {
 
     public static void check(ServerPlayer player) {
         AccessGate.Result access = AccessGate.resolve(player);
-        if (!access.active() || access.handle().networkId() == null) return;
+        if (!access.active()) return;
         CacheHandle handle = access.handle();
-        if (CraftingReservations.operating(handle.cacheId())) return;
+        if (handle.networkId() == null) { DISPATCH_STATES.remove(handle.cacheId()); return; }
+        if (CraftingReservations.operating(handle.cacheId())) { DISPATCH_STATES.remove(handle.cacheId()); return; }
         CacheLedger ledger = CacheLedger.get(player.getServer());
         String address = ledger.returnAddress(handle.cacheId());
-        if (address == null || address.isEmpty()) return;
         CacheRecord record = ledger.find(handle.cacheId());
-        if (record == null) return;
+        if (record == null) { DISPATCH_STATES.remove(handle.cacheId()); return; }
         int slots = record.state().cells().size();
+        // Fresh context: never inherit the previous check's success state.
+        if (DISPATCH_STATES.get(handle.cacheId()) == null || DISPATCH_STATES.get(handle.cacheId()).length != slots)
+            DISPATCH_STATES.put(handle.cacheId(), new byte[slots]);
+        byte[] states = DISPATCH_STATES.get(handle.cacheId());
         for (int slot = 0; slot < slots; slot++) {
             AccessGate.Result current = AccessGate.resolve(player);
             if (!current.active() || !current.handle().equals(handle)) return;
+            // Re-read the live record each slot: an earlier dispatch may have trimmed this cache.
+            CacheRecord live = ledger.find(handle.cacheId());
+            if (live == null) { DISPATCH_STATES.remove(handle.cacheId()); return; }
+            Cell<ItemVariantKey> cell = live.state().cells().get(slot);
+            if (cell.filter() == null || cell.maximum() < 0) { states[slot] = (byte) RETURN_UNKNOWN; continue; }
+            int overage = Math.max(0, cell.amount() - cell.maximum() * cell.filter().stackSize());
+            if (overage == 0) { states[slot] = (byte) RETURN_UNKNOWN; continue; }
+            if (address == null || address.isEmpty()) { states[slot] = (byte) RETURN_FAILED; continue; }
             // Preserve plane-first preference. A rejected attempt changes no FMP stock
             // and the bee receives its own newly built package, never the plane's object.
-            if (!dispatch(player, handle, ledger, slot, CARD, address))
-                dispatch(player, handle, ledger, slot, BEE, address);
+            int state = dispatch(player, handle, ledger, slot, CARD, address);
+            if (state == RETURN_FAILED) state = dispatch(player, handle, ledger, slot, BEE, address);
+            states[slot] = (byte) state;
         }
     }
 
-    private static boolean dispatch(ServerPlayer player, CacheHandle handle, CacheLedger ledger,
+    private static int dispatch(ServerPlayer player, CacheHandle handle, CacheLedger ledger,
             int slot, Item carrierItem, String address) {
-        if (carrierItem == Items.AIR) return false;
+        if (carrierItem == Items.AIR) return RETURN_FAILED;
         CacheRecord record = ledger.find(handle.cacheId());
-        if (record == null || slot >= record.state().cells().size()) return false;
+        if (record == null || slot >= record.state().cells().size()) return RETURN_FAILED;
         CacheState<ItemVariantKey> state = record.state();
         Cell<ItemVariantKey> cell = state.cells().get(slot);
-        if (cell.filter() == null || cell.maximum() < 0) return false;
+        if (cell.filter() == null || cell.maximum() < 0) return RETURN_UNKNOWN;
         int overage = Math.max(0, cell.amount() - cell.maximum() * cell.filter().stackSize());
-        if (overage == 0) return false;
+        if (overage == 0) return RETURN_UNKNOWN;
         Carrier carrier = findCarrier(player, handle, state, carrierItem);
-        if (carrier == null) return false;
+        if (carrier == null) return RETURN_FAILED;
 
         int available = cell.amount() - CraftingReservations.reservedCache(handle.cacheId(), slot, null);
         if (carrier.cacheSlot() == slot) available--; // A carrier cannot also be its own cargo.
         int amount = Math.min(Math.min(overage, available), PACKAGE_SLOTS * cell.filter().stackSize());
-        if (amount <= 0) return false;
+        if (amount <= 0) return RETURN_FAILED;
         ItemStack box = buildBox(player, cell.filter(), amount, address);
-        if (box == null) return false;
+        if (box == null) return RETURN_FAILED;
 
         // Prepare both cache debits together, without publishing any change yet.
         CacheEdit<ItemVariantKey> edit = state.edit();
-        if (edit.extract(slot, amount) != amount) return false;
-        if (carrier.cacheSlot() >= 0 && edit.extract(carrier.cacheSlot(), 1) != 1) return false;
+        if (edit.extract(slot, amount) != amount) return RETURN_FAILED;
+        if (carrier.cacheSlot() >= 0 && edit.extract(carrier.cacheSlot(), 1) != 1) return RETURN_FAILED;
         CacheRecord after = record.withState(edit.finish());
 
         boolean sent = carrierItem == CARD
                 ? TransportDispatch.paperPlane(player.serverLevel(), box.copy(), player.position()).dispatched()
                 : TransportDispatch.bee(player.serverLevel(), box.copy(), player.blockPosition(), handle.networkId()).dispatched();
-        if (!sent) return false;
+        if (!sent) return RETURN_FAILED;
 
         // A single revision advance removes cargo AND any carrier held in the cache.
         // The former consumeCarrier() committed separately and invalidated this revision.
@@ -93,7 +124,7 @@ public final class ReturnService {
             player.getInventory().getItem(carrier.inventorySlot()).shrink(1);
             player.getInventory().setChanged();
         }
-        return true;
+        return RETURN_SENT;
     }
 
     private static ItemStack buildBox(ServerPlayer player, ItemVariantKey variant, int amount, String address) {

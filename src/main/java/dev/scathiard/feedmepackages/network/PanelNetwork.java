@@ -132,7 +132,8 @@ public final class PanelNetwork {
                 var cell = record.state().cells().get(i);
                 boolean slotResidual = cell.filter() != null && !record.residual(cell.filter()).isEmpty();
                 int reserved = cell.filter() == null ? 0 : dev.scathiard.feedmepackages.interaction.CursorReservations.reserved(access.handle().cacheId(), i);
-                cells.add(new PanelPackets.CellView(cell.filter() == null ? "" : cell.filter().encoded(), cell.amount(), cell.minimum(), cell.maximum(), record.state().pending(i), reserved, cell.filter() == null ? 1 : cell.filter().stackSize(), slotResidual));
+                cells.add(new PanelPackets.CellView(cell.filter() == null ? "" : cell.filter().encoded(), cell.amount(), cell.minimum(), cell.maximum(), record.state().pending(i), reserved, cell.filter() == null ? 1 : cell.filter().stackSize(), slotResidual,
+                        dev.scathiard.feedmepackages.logistics.ReturnService.dispatchState(access.handle().cacheId(), i)));
             }
             for (var box : record.residuals().values())
                 if (!box.isEmpty()) { residualItem = BuiltInRegistries.ITEM.getKey(box.getItem()).toString(); break; }

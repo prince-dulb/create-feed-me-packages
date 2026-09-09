@@ -57,6 +57,7 @@ public final class TransportTests {
             tests.add(test("return_paper_dispatch", TransportTests::returnPaperDispatch));
             tests.add(test("return_paper_shared_stock", h -> returnSharedStock(h, false)));
             tests.add(test("return_paper_unavailable", h -> returnUnavailable(h, false, false)));
+            tests.add(test("return_state_machine", TransportTests::returnStateMachine));
         }
         return tests;
     }
@@ -384,6 +385,53 @@ public final class TransportTests {
                     .thenExecute(() -> FeedMePackages.LOGGER.info("FMP_RETURN_PAPER_DISPATCH_PASSED stock=64 carrier=0"))
                     .thenSucceed();
         } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Return paper dispatch experiment failed", failure); }
+    }
+
+    /** Return-arrow evidence state machine through the real dispatch entry: gray while nothing can be
+     *  sent, red only after a carrier accepted the surplus, disappears once the cell is at its maximum,
+     *  and never leaks a success across a different cache. */
+    private static void returnStateMachine(GameTestHelper helper) {
+        var f = ReceiveTests.setup(helper, 0);
+        f.player().setPos(helper.absoluteVec(new Vec3(2, 2, 2))); helper.getLevel().addNewPlayer(f.player());
+        TestPlayers.necklace(f.player()).getStackInSlot(0).set(FmpRegistries.NETWORK.get(), UUID.randomUUID());
+        f.ledger().setReturnAddress(f.handle().cacheId(), SupplyService.address(f.player()));
+        var before = f.record(); var edit = before.state().edit();
+        edit.thresholds(0, 0, 1); edit.insert(0, f.key(), 100);
+        f.ledger().replace(f.handle(), before.state().revision(), before.withState(edit.finish()));
+        var carrier = BuiltInRegistries.ITEM.get(ResourceLocation.parse("cmpackagecouriers:cardboard_plane_parts"));
+        var transmitter = new ItemStack(BuiltInRegistries.ITEM.get(ResourceLocation.parse("cmpackagecouriers:location_transmitter")));
+        try {
+            transmitter.getItem().getClass().getMethod("setEnabled", ItemStack.class, boolean.class).invoke(null, transmitter, true);
+            transmitter.getItem().inventoryTick(transmitter, helper.getLevel(), f.player(), 0, false);
+        } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Return state machine transmitter failed", failure); }
+        // Stage 1: over the maximum but no carrier -> gray (FAILED), stock unchanged.
+        ReturnService.check(f.player());
+        helper.assertTrue(ReturnService.dispatchState(f.handle().cacheId(), 0) == ReturnService.RETURN_FAILED,
+                "No evidence state must be FAILED (gray) without a carrier");
+        helper.assertTrue(f.record().state().cells().getFirst().amount() == 100, "Gray check changed stock");
+        // Stage 2: a real carrier accepts -> red (SENT), stock trimmed to the maximum.
+        f.player().getInventory().setItem(0, new ItemStack(carrier));
+        ReturnService.check(f.player());
+        helper.assertTrue(ReturnService.dispatchState(f.handle().cacheId(), 0) == ReturnService.RETURN_SENT,
+                "Accepted dispatch must be SENT (red)");
+        helper.assertTrue(f.record().state().cells().getFirst().amount() == 64, "Return did not trim to the maximum");
+        // Stage 3: at the maximum -> UNKNOWN (no arrow at all, success must not linger).
+        ReturnService.check(f.player());
+        helper.assertTrue(ReturnService.dispatchState(f.handle().cacheId(), 0) == ReturnService.RETURN_UNKNOWN,
+                "At maximum the arrow must disappear (UNKNOWN), not stay red");
+        // Stage 4: a different cache never inherits the previous success state.
+        var ordinary = new ItemStack(FmpRegistries.PENDANT.get());
+        UUID otherId = f.ledger().createOrdinary(); ordinary.set(FmpRegistries.IDENTITY.get(), otherId);
+        helper.assertTrue(ReturnService.dispatchState(otherId, 0) == ReturnService.RETURN_UNKNOWN,
+                "A fresh cache must start with no evidence (UNKNOWN), never inherit SENT");
+        // Stage 5: snapshot carries the same per-cell return state the panel renders.
+        var window = dev.scathiard.feedmepackages.network.PanelNetwork.query(f.player(),
+                new dev.scathiard.feedmepackages.network.PanelPackets.Query(UUID.randomUUID(), f.player().containerMenu.containerId, true));
+        helper.assertTrue(window != null && window.cells().getFirst().returnState() == ReturnService.RETURN_UNKNOWN,
+                "Snapshot returnState does not match the dispatch evidence");
+        helper.assertTrue(f.record().state().cells().getFirst().amount() == 64, "State machine changed stock");
+        FeedMePackages.LOGGER.info("FMP_RETURN_STATE_MACHINE_PASSED failed->sent->unknown->fresh-cache stock=64");
+        helper.succeed();
     }
 
     /** FMP's own automatic return through a real transport bee. The drone must fly inside the cache's

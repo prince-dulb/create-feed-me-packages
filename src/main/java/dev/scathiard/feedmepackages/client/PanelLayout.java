@@ -39,6 +39,29 @@ public record PanelLayout(Rect bounds, List<CellBox> cells, Rect slider, Rect re
     public static int preferredWidth(int count) { return preferredColumns(count) * ROW + 2 * SIDE; }
     private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(value, max)); }
 
+    /** Pixel of a slider endpoint value inside the track artwork. Zero sits on the track's left edge
+     *  and the maximum is clamped to the track's LAST pixel, so the endpoint can never overshoot the
+     *  drawn rail by one pixel (the old integer quotient put value==cap one pixel past it). Rendering,
+     *  hit-testing and drag math all read this same function. */
+    public static int thumbPx(int sliderX, int width, int value, int groupCap) {
+        int cap = Math.max(1, groupCap);
+        int trackW = Math.max(1, width - 2 * TRACK_INSET);
+        int first = sliderX + TRACK_INSET;
+        int last = first + trackW - 1;
+        int clamped = value < 0 ? cap : Math.max(0, Math.min(cap, value));
+        int raw = first + clamped * trackW / cap;
+        return Math.max(first, Math.min(last, raw));
+    }
+
+    /** Inverse of {@link #thumbPx} in its unclamped range: the group value at a drag position. The
+     *  midpoint pixel maps to cap/2 groups, preserving the established slider semantics. */
+    public static int thumbValueAt(int sliderX, int width, double x, int groupCap) {
+        int cap = Math.max(1, groupCap);
+        int trackW = Math.max(1, width - 2 * TRACK_INSET);
+        double relative = x - sliderX - TRACK_INSET;
+        return Math.max(0, Math.min(cap, (int)Math.round(relative * cap / trackW)));
+    }
+
     public static PanelLayout compute(int screenHeight, int left, int top, int count,
             int firstRow, int expanded, boolean bookOpen) {
         count = Math.max(0, count);

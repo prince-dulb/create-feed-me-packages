@@ -215,6 +215,10 @@ public final class ClientReview {
                 case 19 -> {
                     if (ticks - changed < 40) return;
                     if (!reviewLayouts()) return;
+                    if (!clickOutsideDone) {
+                        if (!reviewClickOutside()) return;
+                        clickOutsideDone = true;
+                    }
                     advance();
                 }
                 case 20 -> {
@@ -340,6 +344,7 @@ public final class ClientReview {
     private static boolean creativeIndependentDone;
     private static boolean independentPlaceDone;
     private static boolean sameTickDone;
+    private static boolean clickOutsideDone;
     private static boolean reviewCreativePlacement() {
         var mc = Minecraft.getInstance();
         if (creativeStage != 0 && ticks - creativeChanged < 20) return false;
@@ -954,6 +959,92 @@ public final class ClientReview {
         return false;
     }
     private static void nextLayout() { layoutStage++; layoutChanged = ticks; }
+    private static int clickOutsideStage, clickOutsideChanged;
+    /** Real click-routing for the test.57 "click outside" behaviours: addr blur-commit and slider
+     *  collapse, all through the actual panel event listeners and the server snapshot. */
+    private static boolean reviewClickOutside() {
+        var mc = Minecraft.getInstance();
+        if (clickOutsideStage != 0 && ticks - clickOutsideChanged < 15) return false;
+        switch (clickOutsideStage) {
+            case 0 -> {
+                // Layout review leaves the player in creative; click-outside reads inventory slots and
+                // must not create/destroy items, so return to survival with a clean cursor first.
+                server(player -> {
+                    player.setGameMode(GameType.SURVIVAL);
+                    player.containerMenu.setCarried(ItemStack.EMPTY);
+                    player.getInventory().clearContent();
+                    player.getInventory().setChanged();
+                });
+                mc.setScreen(new InventoryScreen(mc.player)); clickOutsideChanged = ticks; clickOutsideStage++;
+            }
+            case 1 -> {
+                if (LogisticsPanel.visibleCells(mc.screen).isEmpty()) return false;
+                // Open cell 0's slider.
+                clickCellDot(0); clickOutsideStage++;
+            }
+            case 2 -> {
+                if (panelLayout().slider() == null) return false;
+                var snapshot = panelSnapshot(); var min = snapshot.cells().get(0).minimum(); var max = snapshot.cells().get(0).maximum();
+                // Click outside the slider but still inside the panel (e.g. a neighbouring cell body would
+                // deposit; use the panel's empty corner instead). The dot of cell 1 keeps selection when
+                // clicked, so we click a non-dot cell area to force a pure collapse without a transfer.
+                var bounds = LogisticsPanel.exclusions(mc.screen).getFirst();
+                click(bounds.x() + bounds.width() - 5, bounds.y() + bounds.height() - 5);
+                require(panelLayout().slider() == null, "Click outside the slider did not collapse it");
+                var after = panelSnapshot();
+                require(after.cells().get(0).minimum() == min && after.cells().get(0).maximum() == max,
+                        "Collapse changed the cell thresholds: " + min + "/" + max + " -> " + after.cells().get(0).minimum() + "/" + after.cells().get(0).maximum());
+                clickOutsideStage++;
+            }
+            case 3 -> {
+                // Enter address edit, type a fresh value, then click outside the panel (over vanilla
+                // inventory) and verify the draft committed and editing ended.
+                var bar = panelLayout().returnBar();
+                click(bar.x() + 4, bar.y() + bar.height() / 2);
+                require(returnEditing(), "Click on the return bar did not begin editing");
+                int codePoint = 'A'; var typed = new ScreenEvent.CharacterTyped.Pre(mc.screen, (char) codePoint, 0);
+                NeoForge.EVENT_BUS.post(typed); require(typed.isCanceled(), "Address typing leaked to the vanilla edit box");
+                clickOutsideStage++;
+            }
+            case 4 -> {
+                require(returnEditing(), "Address draft was lost before the outside click");
+                // Outside the panel: over a vanilla inventory slot of the (possibly FMP-replaced) screen.
+                var container = (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) mc.screen;
+                click(container.getGuiLeft() + 8, container.getGuiTop() + 8);
+                require(!returnEditing(), "Click outside the panel did not end address editing");
+                clickOutsideStage++;
+            }
+            case 5 -> {
+                // Let the SET_RETURN_ADDRESS land, then assert the server stored it (starts with our A).
+                var address = serverReturnAddress();
+                if (address == null) return false;
+                require(address.endsWith("A"), "Outside click did not commit the return address draft: " + address);
+                FeedMePackages.LOGGER.info("FMP_CLICK_OUTSIDE_PASSED address={} sliderCollapse=true", address);
+                clickOutsideStage++;
+            }
+            case 6 -> {
+                mc.player.closeContainer(); mc.setScreen(null);
+                return true;
+            }
+            default -> throw new IllegalStateException("Unexpected click-outside stage");
+        }
+        clickOutsideChanged = ticks; return false;
+    }
+    private static String serverReturnAddress() {
+        try {
+            var mc = Minecraft.getInstance(); var server = mc.getSingleplayerServer(); var id = mc.player.getUUID();
+            var future = CompletableFuture.supplyAsync(() -> {
+                var player = server.getPlayerList().getPlayer(id);
+                return dev.scathiard.feedmepackages.storage.CacheLedger.get(player.getServer()).returnAddress(
+                        dev.scathiard.feedmepackages.service.AccessGate.resolve(player).handle().cacheId());
+            }, server);
+            return future.join();
+        } catch (Throwable failure) { return null; }
+    }
+    private static boolean returnEditing() {
+        try { var f = LogisticsPanel.class.getDeclaredField("returnEditing"); f.setAccessible(true); return f.getBoolean(null); }
+        catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
+    }
     private static void checkPanelBounds() {
         var screen = (net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>) Minecraft.getInstance().screen;
         var b = LogisticsPanel.exclusions(screen).getFirst();
@@ -1038,7 +1129,8 @@ public final class ClientReview {
         var slider = panelLayout().slider(); if (slider == null) throw new IllegalStateException("Slider did not open for cell " + slot);
         int groupCap = panelSnapshot().groupCapacity();
         int minimum = Math.max(0, panelSnapshot().cells().get(slot).minimum());
-        int minAt = slider.x() + PanelLayout.TRACK_INSET + (minimum * (slider.width() - 2 * PanelLayout.TRACK_INSET) / Math.max(1, groupCap));
+        // Hit the actual artwork endpoint (shared mapping) so press/drag math matches the rendered thumb.
+        int minAt = PanelLayout.thumbPx(slider.x(), slider.width(), minimum, groupCap);
         int bandY = slider.y() + PanelLayout.MIN_THUMB_Y + 2;
         int targetX = slider.x() + PanelLayout.TRACK_INSET + (slider.width() - 2 * PanelLayout.TRACK_INSET) / 2;
         panelPress(minAt, bandY); panelDrag(targetX, bandY); panelRelease(targetX, bandY);

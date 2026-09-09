@@ -648,7 +648,10 @@ public final class LogisticsPanel {
             LogisticsPanel.overlay(g, x + 2, y + 4, 3, 1, color);
         }
         if (!cell.template().isEmpty() && cell.maximum() >= 0 && cell.amount() > cell.maximum() * cell.stackSize()) {
-            int color = -2058918;
+            // Return arrow reflects the server's real dispatch evidence: red only when a carrier was
+            // actually accepted while the cell is still over its maximum; gray while it still cannot
+            // dispatch (no evidence yet, no carrier, unavailable address/network, or last check failed).
+            int color = cell.returnState() == dev.scathiard.feedmepackages.logistics.ReturnService.RETURN_SENT ? -2058918 : -6909823;
             LogisticsPanel.overlay(g, x + 1, y + 1, 5, 1, color);
             LogisticsPanel.overlay(g, x + 2, y + 2, 3, 1, color);
             LogisticsPanel.overlay(g, x + 3, y + 3, 1, 3, color);
@@ -688,9 +691,8 @@ public final class LogisticsPanel {
     }
 
     private static int thumbPx(int sliderX, int width, int value, int groupCap) {
-        // Zero sits on the track's left edge (x+3), never pushed +1 past it. Non-zero uses the full
-        // mapped span. Both rendering and the hit test read this same function, so they stay aligned.
-        return sliderX + PanelLayout.TRACK_INSET + (value < 0 ? 0 : Math.max(0, Math.min(groupCap, value) * (width - 2 * PanelLayout.TRACK_INSET) / Math.max(1, groupCap)));
+        // Shared with PanelLayoutTest: zero and the maximum sit exactly on the track's artwork edges.
+        return PanelLayout.thumbPx(sliderX, width, value, groupCap);
     }
 
     private static void panelBlit(GuiGraphics g, int sx, int sy, int sw, int sh, int u, int v, int w, int h) {
@@ -742,9 +744,10 @@ public final class LogisticsPanel {
         }
         LogisticsPanel.panelBlit(g, midEnd, ty, 4, 5, 36, 1, 4, 5);
         // Left endpoint = small triangle below the track; right endpoint = triangle above the track,
-        // so both stay draggable even when they are at the same position.
+        // so both stay draggable even when they are at the same position. Both sprites are centered on
+        // their endpoint pixel (blit at -2 spans 5px around the centre).
         LogisticsPanel.panelBlit(g, minAt - 2, y + PanelLayout.MIN_THUMB_Y, 5, 5, 0, 15, 5, 5);
-        LogisticsPanel.panelBlit(g, maxAt - 3, y + PanelLayout.MAX_THUMB_Y, 5, 5, 7, 11, 5, 5);
+        LogisticsPanel.panelBlit(g, maxAt - 2, y + PanelLayout.MAX_THUMB_Y, 5, 5, 7, 11, 5, 5);
         String minLabel = String.valueOf(minN * cell.stackSize());
         float s1 = Math.min(8.0f / 9.0f, (w - 8) / 2.0f / (float)LogisticsPanel.MC.font.width(minLabel));
         g.pose().pushPose();
@@ -836,6 +839,50 @@ public final class LogisticsPanel {
         g.pose().popPose();
     }
 
+    /** While editing the return address, a click outside the field commits the draft (only when it
+     *  actually changed) and ends editing; unchanged drafts simply close. A failed submit keeps the
+     *  draft recoverable and reports the failure, matching the Enter behaviour. The underlying click
+     *  is NOT consumed here: it continues to the panel or the vanilla screen below. */
+    private static void commitReturnOnClickOutside(double x, double y) {
+        if (!returnEditing || !LogisticsPanel.active() || layout.returnAddressContains(x, y)
+                || layout.slider() != null && layout.slider().contains(x, y)) {
+            return;
+        }
+        String current = snapshot.returnAddress() == null ? "" : snapshot.returnAddress();
+        if (returnBuffer.equals(current)) {
+            returnEditing = false;
+            return;
+        }
+        if (LogisticsPanel.send(CacheActions.Action.SET_RETURN_ADDRESS, -1, -1, -1, returnBuffer)) {
+            returnEditing = false;
+        } else {
+            // Keep editing so the draft is not silently lost; show why the submit failed.
+            LogisticsPanel.notice("result.stale");
+        }
+    }
+
+    /** While a slider is expanded, a click outside that slider (and outside every cell's config dot)
+     *  collapses it without changing any thresholds. Clicking another cell's dot still switches the
+     *  selection (handled by the normal press flow afterwards); clicking a cell body keeps routing to
+     *  that cell. The grid itself does not move when the slider collapses, so no re-aimed drop here. */
+    private static void collapseSliderOnClickOutside(double x, double y) {
+        if (selected < 0 || layout.slider() == null || layout.slider().contains(x, y)) {
+            return;
+        }
+        // While a click lands on the return bar, keep the slider open: the user is configuring the
+        // address (or still editing its draft), not dismissing the popup.
+        if (layout.returnBar() != null && layout.returnBar().contains(x, y)) {
+            return;
+        }
+        for (PanelLayout.CellBox box : layout.cells()) {
+            if (box.dot().contains(x, y)) {
+                return; // A config dot manages selection itself (switch or toggle).
+            }
+        }
+        selected = -1;
+        LogisticsPanel.updateLayout();
+    }
+
     private static boolean press(double x, double y, int button) {
         if (!LogisticsPanel.visible()) {
             return false;
@@ -844,6 +891,11 @@ public final class LogisticsPanel {
             capturedButton = button;
             return true;
         }
+        // Context cleanup runs BEFORE the in-panel bounds check so clicks outside the panel (over the
+        // vanilla inventory) still commit a changed return address and collapse an expanded slider,
+        // without swallowing the underlying vanilla click: the click itself keeps routing below.
+        LogisticsPanel.commitReturnOnClickOutside(x, y);
+        LogisticsPanel.collapseSliderOnClickOutside(x, y);
         if (!layout.bounds().contains(x, y)) {
             return false;
         }
@@ -1011,8 +1063,9 @@ public final class LogisticsPanel {
             return;
         }
         int groupCap = snapshot.groupCapacity();
-        double relative = x - (double)layout.slider().x() - PanelLayout.TRACK_INSET;
-        int min = Math.clamp((long)((int)Math.round(relative * (double)groupCap / (double)(layout.slider().width() - 10))), (int)0, (int)groupCap);
+        // Inverse of PanelLayout.thumbPx's rounded mapping, kept in the same class so the drag and the
+        // rendered endpoint cannot drift apart.
+        int min = PanelLayout.thumbValueAt(layout.slider().x(), layout.slider().width(), x, groupCap);
         int cap = snapshot.cells().get(selected).maximum();
         if (cap < 0) {
             cap = groupCap;
@@ -1029,12 +1082,15 @@ public final class LogisticsPanel {
         }
         int groupCap = snapshot.groupCapacity();
         double relative = x - (double)layout.slider().x() - PanelLayout.TRACK_INSET;
-        // "No return" only at the true far right, beyond the full-capacity position (width-10).
-        if (relative >= (double)(layout.slider().width() - 9)) {
+        // "No return" at the true far-right pixel of the track: dragging to the track's last pixel
+        // already means the maximum (== full capacity), so the -1 zone begins exactly there and never
+        // needs the old one-pixel-later dead zone.
+        int trackW = Math.max(1, layout.slider().width() - 2 * PanelLayout.TRACK_INSET);
+        if (relative >= trackW - 1) {
             draftMaximum = -1;
             return;
         }
-        int max = Math.clamp((long)((int)Math.round(relative * (double)groupCap / (double)(layout.slider().width() - 10))), (int)0, (int)groupCap);
+        int max = PanelLayout.thumbValueAt(layout.slider().x(), layout.slider().width(), x, groupCap);
         int lower = snapshot.cells().get(selected).minimum();
         if (lower < 0) {
             lower = 0;
