@@ -24,10 +24,14 @@ compile-out.txt
 full-out.txt
 gt-out.txt
 release/v*-test.*/
+release/testing/
 
 # Internal project documents / collaboration rules (not for the public repo)
 docs/
 AGENTS.md
+doc示例/
+docs.zip
+迁移对照.md
 
 # Verification / generation tooling (not needed to build the mod)
 tools/
