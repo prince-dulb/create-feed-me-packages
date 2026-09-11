@@ -2,6 +2,8 @@
 
 English | [简体中文](readme.zh.md)
 
+[![CurseForge](https://img.shields.io/badge/CurseForge-Download-F16436?logo=curseforge&logoColor=white)](https://www.curseforge.com/minecraft/mc-mods/create-feed-me-packages) [![Modrinth](https://img.shields.io/badge/Modrinth-Download-00AF5C?logo=modrinth&logoColor=white)](https://modrinth.com/mod/create-feed-me-packages)
+
 ## About
 
 Your factory can produce building supplies automatically, but you still have to run home to collect them. **Create: Feed Me Packages!** is about saving that trip.
@@ -50,7 +52,7 @@ Each return consumes paper-plane parts or a robo-bee. Without a suitable carrier
 
 ### Five levels of capacity
 
-Your factory has a part in upgrades, too. Make Expansion Links through Create sequenced assembly, then upgrade the pendant at a smithing table to carry more kinds of supplies and more of each.
+Your factory has a part in upgrades, too. Make Upgrade Links through Create sequenced assembly, then upgrade the pendant at a smithing table to carry more kinds of supplies and more of each.
 
 | Level | Cache cells | Capacity per cell |
 | --- | --- | --- |
@@ -72,7 +74,7 @@ Your inventory is used first, and the cache supplies the shortfall. Support incl
 
 | Mod | Requirement | Integration |
 | --- | --- | --- |
-| **Create** | Required | Supplies the goods. The pendant binds to a logistics network, checks stock, and requests materials for your packagers to box up. Sequenced assembly also produces Expansion Links. |
+| **Create** | Required | Supplies the goods. The pendant binds to a logistics network, checks stock, and requests materials for your packagers to box up. Sequenced assembly also produces Upgrade Links. |
 | **Curios** | Required | Provides the equipment slot for the pendant. |
 | **JEI** | Optional | View recipes and transfer ingredients, drawing missing materials from the cache. Dragging JEI item templates into cache filters isn't supported. |
 | **Package Couriers** | Optional | Uses its existing paper-plane delivery to bring restocking packages to you, ready for this mod to receive into the cache. |
